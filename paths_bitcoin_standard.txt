@@ -1,0 +1,20 @@
+# =============================================================================
+# Bitcoin Standard Derivation Paths (BIP44/BIP49/BIP84)
+# Basic configuration for standard wallet recovery
+# =============================================================================
+
+# BIP44 - Legacy (1... addresses)
+m/44'/0'/0'/0/0  0  100
+m/44'/0'/0'/1/0  0  100
+
+# BIP49 - SegWit Compatible (3... addresses)
+m/49'/0'/0'/0/0  0  100
+m/49'/0'/0'/1/0  0  100
+
+# BIP84 - Native SegWit (bc1q... addresses)
+m/84'/0'/0'/0/0  0  100
+m/84'/0'/0'/1/0  0  100
+
+# BIP86 - Taproot (bc1p... addresses)
+m/86'/0'/0'/0/0  0  100
+m/86'/0'/0'/1/0  0  100

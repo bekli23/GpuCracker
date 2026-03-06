@@ -45,12 +45,14 @@ private:
             return;
         }
 
-        std::cout << "[AKM] FORCE READING PROFILE: " << filePath << " ...\n";
+        // std::cout << "[AKM] FORCE READING PROFILE: " << filePath << " ...\n"; // Suppressed
 
         // Resetam totul inainte de incarcare
         baseWords.clear();
         customHex.clear();
         isStrict = false;
+        
+
 
         std::vector<std::string> lines;
         std::string line;
@@ -63,7 +65,7 @@ private:
 
             if (cleanHeader == "#STRICT_HEX" || cleanHeader == "STRICT_HEX") {
                 isStrict = true;
-                std::cout << "[AKM] HEADER DETECTED (#STRICT_HEX) -> ACTIVATING STRICT MODE!\n";
+                // std::cout << "[AKM] HEADER DETECTED (#STRICT_HEX) -> ACTIVATING STRICT MODE!\n"; // Suppressed
             } else {
                 // Prima linie nu e header, o pastram ca data
                 lines.push_back(line);
@@ -80,10 +82,25 @@ private:
         // 3. Procesam
         int loaded = 0;
         int ignored = 0;
+        bool inWordsSection = false;  // Only process lines after #WORDS
 
         for (auto& l : lines) {
             std::string cleanL = cleanString(l);
-            if (cleanL.empty() || cleanL[0] == '#') continue;
+            if (cleanL.empty()) continue;
+            
+            // Check for section headers
+            if (cleanL == "#WORDS") {
+                inWordsSection = true;
+                continue;
+            }
+            if (cleanL == "#RULES" || cleanL == "#METADATA") {
+                inWordsSection = false;
+                continue;
+            }
+            
+            // Skip comments and lines outside #WORDS section
+            if (cleanL[0] == '#') continue;
+            if (!inWordsSection && !isStrict) continue;  // Skip metadata in standard mode
 
             size_t eqPos = cleanL.find('=');
             
@@ -113,19 +130,20 @@ private:
                     std::string v = cleanL.substr(eqPos + 1);
                     customHex[w] = v;
                     baseWords.push_back(w);
-                } else {
-                    baseWords.push_back(cleanL);
+                    loaded++;
                 }
-                loaded++;
             }
         }
 
         if (isStrict) {
-            std::cout << "[AKM] RESULT: Loaded " << loaded << " VALID words. Ignored " << ignored << " junk words.\n";
-            std::cout << "[AKM] DICTIONARY SIZE: " << baseWords.size() << " (Should be 16 for hex)\n";
+            // std::cout << "[AKM] RESULT: Loaded " << loaded << " VALID words. Ignored " << ignored << " junk words.\n"; // Suppressed
+            // std::cout << "[AKM] DICTIONARY SIZE: " << baseWords.size() << " (Should be 16 for hex)\n"; // Suppressed
         } else {
-            std::cout << "[AKM] Loaded " << loaded << " words (Standard Mode).\n";
+            // std::cout << "[AKM] Loaded " << loaded << " words (Standard Mode).\n"; // Suppressed
+            // std::cout << "[AKM] DICTIONARY SIZE: " << baseWords.size() << "\n"; // Suppressed
         }
+        
+
     }
 
     std::string extend_token(const std::string& base, const std::string& word) {
@@ -161,7 +179,7 @@ public:
         // Daca numele profilului se termina in .txt, IGNORAM path-ul default si folosim profilul ca fisier.
         if (profileName.size() >= 4 && profileName.substr(profileName.size() - 4) == ".txt") {
             finalFileToLoad = profileName;
-            std::cout << "[AKM] Profile name ends in .txt -> Overriding wordlist to: " << finalFileToLoad << "\n";
+            // std::cout << "[AKM] Profile name ends in .txt -> Overriding wordlist to: " << finalFileToLoad << "\n"; // Suppressed
         }
 
         // Incarcam fisierul decis mai sus
@@ -182,7 +200,7 @@ public:
 
         // --- Logica Veche pentru alte profile ---
         if (profileName == "auto-linear" && !baseWords.empty()) {
-            std::cout << "[AKM] Auto-Linear Mapping...\n";
+            // std::cout << "[AKM] Auto-Linear Mapping...\n"; // Suppressed
             for (size_t i = 0; i < baseWords.size(); ++i) {
                 char buf[16]; sprintf(buf, "%x", (unsigned int)i);
                 customHex[baseWords[i]] = std::string(buf);

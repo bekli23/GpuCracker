@@ -15,7 +15,7 @@ struct ProgramConfig {
     unsigned long long count = 0; // 0 = infinite (default), or limit set by --count
     
     // --- MAIN MODES ---
-    // Options: "mnemonic", "akm", "check", "scan", "xprv-mode"
+    // Options: "mnemonic", "akm", "check", "scan", "xprv-mode", "brainwallet", "pubkey", "bsgs", "rho", "hybrid"
     std::string runMode = "mnemonic"; 
 
     // --- CHECK MODE CONFIG ---
@@ -24,8 +24,35 @@ struct ProgramConfig {
     std::string socketPath = "";      // --socket
 
     // --- BRAINWALLET MODE ---
-    // Options: "random", "alpha", "num", "schematic", "hex", "clever"
-    std::string brainwalletMode = ""; 
+    // Options: "random", "alpha", "num", "schematic", "hex", "clever", "file"
+    std::string brainwalletMode = "";
+    std::string brainwalletFile = "";    // --brain-file <path.txt> wordlist for brainwallet file mode
+
+    // --- PUBKEY MODE (Public Key Recovery) ---
+    std::string pubAddress = "";         // --pub-address <target_address>
+    int pubBitStart = 0;                 // --pub-bit-start <start_bit>
+    int pubBitEnd = 0;                   // --pub-bit-end <end_bit> or --pub-bit <bits>
+    std::string pubKeyType = "auto";     // --pub-type <auto/p2pkh/p2sh/p2wpkh> (auto-detect from address)
+    
+    // --- BSGS MODE (Baby Step Giant Step) ---
+    std::string bsgsPub = "";            // --bsgs-pub <public_key_hex>
+    uint64_t bsgsMax = 0;                // --bsgs-max <max_key_value> (default: 2^40)
+    int bsgsThreads = 0;                 // --bsgs-threads (0 = auto)
+    int bsgsRange = 0;                   // --bsgs-range <bits> (e.g., 135 for 2^135 range)
+    std::string bsgsStartStr = "0";      // --bsgs-start <offset> (start search from this offset, supports large values)
+    std::string bsgsMode = "sequential"; // --bsgs-mode <sequential/random> (default: sequential)
+    uint64_t bsgsM = 0;                  // --bsgs-m <value> (force specific m for baby steps, use with existing cache)
+    std::string bsgsCacheFile = "";      // --bsgs-cache <file> (use specific cache file)
+    std::string bsgsTargetsFile = "";    // --bsgs-targets <file> (multiple public keys to search)
+    int bsgsSegmentBits = 0;             // --bsgs-segment-bits <N> (segment size = 2^N, default: m*m)
+    int bsgsNodeId = 0;                  // --bsgs-node-id <N> (for cluster/distributed mode)
+    int bsgsTotalNodes = 1;              // --bsgs-total-nodes <M> (total nodes in cluster)
+    int bsgsDpBits = 0;                  // --bsgs-dp-bits <N> (distinguished points with N leading zeros)
+    int bsgsStatsInterval = 10;          // --bsgs-stats-interval <SEC> (stats update interval)
+    bool bsgsUseBloom = false;           // --bsgs-bloom (use bloom filter for baby steps)
+    int bsgsPartitionBits = 0;           // --bsgs-partition-bits <N> (work stealing partitions)
+    std::vector<std::string> bsgsBloomKeysFiles; // --bloom-keys FILE(s) (check addresses in bloom filter)
+    bool bsgsUseGPU = false;             // --bsgs-gpu (use GPU acceleration for giant steps)
 
     // --- XPRV MODE ---
     std::string xprv = ""; // --xprv (single key check)
@@ -37,7 +64,9 @@ struct ProgramConfig {
     std::vector<int> akmLengths;        
     std::string akmGenMode = "random"; // random, schematic, wave
     bool akmListProfiles = false;        
-    std::vector<int> akmBits;            
+    std::vector<int> akmBits;
+    int akmProfileRotationSeconds = 0;   // 0 = no rotation, >0 = rotate every N seconds
+    bool akmRandomProfile = false;       // true = select random profile from akm_profile folder            
 
     // --- RESUME / CONTINUE ---
     std::string startFrom = "";       // --continue <HEX>
@@ -78,6 +107,13 @@ struct ProgramConfig {
     
     // --- ADDRESS SETTINGS ---
     std::string setAddress = "ALL";
+
+    // --- BLOCK EXPLORER (Web Interface) ---
+    bool enableExplorer = false;       // --enable-explorer (start mini block explorer)
+    int explorerPort = 8080;           // --explorer-port (web interface port)
+    std::string blockchainDir = "";    // --blockchain-dir (path to blk*.dat files)
+    std::string indexDir = "";         // --index-dir (path to store address index)
+    bool explorerForce = false;        // --explorer-force (skip 80% wait, start immediately)
 
     // --- FLAGS ---
     bool showRealSpeed = false; 
@@ -127,8 +163,76 @@ inline ProgramConfig parseArgs(int argc, char* argv[]) {
         
         // --- MODES ---
         if (arg == "--mode" && i + 1 < argc) cfg.runMode = argv[++i];
-        else if (arg == "--profile" && i + 1 < argc) cfg.akmProfile = argv[++i];
+        else if (arg == "--profile") {
+            // Check if next arg exists and is NOT another flag (starts with --)
+            if (i + 1 < argc) {
+                std::string nextArg = argv[i + 1];
+                if (nextArg.substr(0, 2) != "--") {
+                    // Check if it's a number (seconds) or a profile name
+                    bool isNumber = !nextArg.empty() && std::all_of(nextArg.begin(), nextArg.end(), ::isdigit);
+                    if (isNumber) {
+                        cfg.akmProfileRotationSeconds = std::stoi(nextArg);
+                        cfg.akmRandomProfile = true;
+                        i++; // consume the number
+                    } else {
+                        // It's a profile name
+                        cfg.akmProfile = argv[++i];
+                    }
+                } else {
+                    // Next arg is another flag, enable random profile mode
+                    cfg.akmRandomProfile = true;
+                }
+            } else {
+                // --profile is the last arg, enable random profile mode
+                cfg.akmRandomProfile = true;
+            }
+        }
         else if (arg == "--brainwallet" && i + 1 < argc) cfg.brainwalletMode = argv[++i];
+        else if (arg == "--brain-file" && i + 1 < argc) cfg.brainwalletFile = argv[++i];
+
+        // --- PUBKEY MODE (Public Key Recovery) ---
+        else if (arg == "--pub-address" && i + 1 < argc) cfg.pubAddress = argv[++i];
+        else if (arg == "--pub-bit" && i + 1 < argc) {
+            int bits = std::stoi(argv[++i]);
+            cfg.pubBitStart = 0;
+            cfg.pubBitEnd = bits;
+        }
+        else if (arg == "--pub-bit-start" && i + 1 < argc) cfg.pubBitStart = std::stoi(argv[++i]);
+        else if (arg == "--pub-bit-end" && i + 1 < argc) cfg.pubBitEnd = std::stoi(argv[++i]);
+        else if (arg == "--pub-type" && i + 1 < argc) cfg.pubKeyType = argv[++i];
+        
+        // --- BSGS MODE (Baby Step Giant Step) ---
+        else if (arg == "--bsgs-pub" && i + 1 < argc) cfg.bsgsPub = argv[++i];
+        else if (arg == "--bsgs-max" && i + 1 < argc) cfg.bsgsMax = std::stoull(argv[++i]);
+        else if (arg == "--bsgs-threads" && i + 1 < argc) cfg.bsgsThreads = std::stoi(argv[++i]);
+        else if (arg == "--bsgs-range" && i + 1 < argc) cfg.bsgsRange = std::stoi(argv[++i]);
+        else if (arg == "--bsgs-start" && i + 1 < argc) cfg.bsgsStartStr = argv[++i];
+        else if (arg == "--bsgs-mode" && i + 1 < argc) cfg.bsgsMode = argv[++i];
+        else if (arg == "--bsgs-m" && i + 1 < argc) cfg.bsgsM = std::stoull(argv[++i]);
+        else if (arg == "--bsgs-cache" && i + 1 < argc) cfg.bsgsCacheFile = argv[++i];
+        else if (arg == "--bsgs-targets" && i + 1 < argc) cfg.bsgsTargetsFile = argv[++i];
+        else if (arg == "--bsgs-segment-bits" && i + 1 < argc) cfg.bsgsSegmentBits = std::stoi(argv[++i]);
+        else if (arg == "--bsgs-node-id" && i + 1 < argc) cfg.bsgsNodeId = std::stoi(argv[++i]);
+        else if (arg == "--bsgs-total-nodes" && i + 1 < argc) cfg.bsgsTotalNodes = std::stoi(argv[++i]);
+        else if (arg == "--bsgs-dp-bits" && i + 1 < argc) cfg.bsgsDpBits = std::stoi(argv[++i]);
+        else if (arg == "--bsgs-stats-interval" && i + 1 < argc) cfg.bsgsStatsInterval = std::stoi(argv[++i]);
+        else if (arg == "--bsgs-bloom") cfg.bsgsUseBloom = true;
+        else if (arg == "--bsgs-gpu") cfg.bsgsUseGPU = true;
+        else if (arg == "--bsgs-partition-bits" && i + 1 < argc) cfg.bsgsPartitionBits = std::stoi(argv[++i]);
+        else if (arg == "--bloom-keys" && i + 1 < argc) {
+            // Support multiple bloom filter files separated by comma
+            std::string files = argv[++i];
+            std::stringstream ss(files);
+            std::string file;
+            while (std::getline(ss, file, ',')) {
+                // Trim whitespace
+                file.erase(0, file.find_first_not_of(" \t"));
+                file.erase(file.find_last_not_of(" \t") + 1);
+                if (!file.empty()) {
+                    cfg.bsgsBloomKeysFiles.push_back(file);
+                }
+            }
+        }
 
         // --- GENERATION STRATEGY (CRITICAL FOR XPRV/AUTO MODE) ---
         else if (arg == "--random") cfg.entropyMode = "random";        
@@ -193,6 +297,13 @@ inline ProgramConfig parseArgs(int argc, char* argv[]) {
         else if (arg == "--card") cfg.entropyMode = "card";
         else if (arg == "--base6") cfg.entropyMode = "base6";
         else if (arg == "--base10") cfg.entropyMode = "base10";
+        
+        // --- BLOCK EXPLORER ---
+        else if (arg == "--enable-explorer") cfg.enableExplorer = true;
+        else if (arg == "--explorer-port" && i + 1 < argc) cfg.explorerPort = std::stoi(argv[++i]);
+        else if (arg == "--blockchain-dir" && i + 1 < argc) cfg.blockchainDir = argv[++i];
+        else if (arg == "--index-dir" && i + 1 < argc) cfg.indexDir = argv[++i];
+        else if (arg == "--explorer-force") cfg.explorerForce = true;
     }
 
     // Default settings logic
@@ -216,14 +327,17 @@ inline ProgramConfig parseArgs(int argc, char* argv[]) {
 // =============================================================
 inline void printHelp() {
     std::cout << "==============================================================\n";
-    std::cout << "   GpuCracker v42.2 (Full Command List) - Modular Arch\n";
+    std::cout << "   GpuCracker v50.0 (BSGS + Rho + Hybrid ECDLP) - Modular Arch\n";
     std::cout << "==============================================================\n\n";
 
     std::cout << "Usage: GpuCracker.exe [OPTIONS]\n\n";
 
     std::cout << "--- OPERATING MODES ---\n";
     std::cout << "  --mode NAME              Select operation mode (Default: mnemonic)\n";
-    std::cout << "                            Available: mnemonic, akm, check, scan, xprv-mode\n";
+    std::cout << "                            Available: mnemonic, akm, check, scan, xprv-mode,\n";
+    std::cout << "                                      brainwallet, pubkey, bsgs, rho, hybrid\n";
+    std::cout << "                            Note: 'rho' = Pollard's Rho (memory-efficient)\n";
+    std::cout << "                                  'hybrid' = Auto-select BSGS or Rho\n";
 
     std::cout << "\n--- SCAN MODE (XPRV/Path Derivation) ---\n";
     std::cout << "  --mode scan              Derive addresses from XPRV using path lists.\n";
@@ -240,6 +354,140 @@ inline void printHelp() {
     std::cout << "                            - 'hex'        : Random Hex strings (32 chars)\n";
     std::cout << "                            - 'schematic' : Recurring patterns (e.g. 'ababab')\n";
     std::cout << "                            - 'clever'      : AI-like Markov Chain generator\n";
+    std::cout << "                            - 'file'      : Read passwords from file (use --brain-file)\n";
+    std::cout << "  --brain-file FILE        Wordlist file for brainwallet 'file' mode\n";
+
+    std::cout << "\n--- PUBKEY MODE (Public Key Recovery) ---\n";
+    std::cout << "  --mode pubkey            Search for private key in bit range.\n";
+    std::cout << "  --pub-address ADDR       Target Bitcoin address to search for.\n";
+    std::cout << "  --pub-bit N              Search range: 0 to 2^N (e.g., --pub-bit 71).\n";
+    std::cout << "  --pub-bit-start N        Start bit position (default: 0).\n";
+    std::cout << "  --pub-bit-end N          End bit position (e.g., 71 for Puzzle 71).\n";
+    std::cout << "  --pub-type TYPE          Address type: auto, p2pkh, p2sh, p2wpkh\n";
+    std::cout << "  --type cuda              Use GPU acceleration (much faster than CPU).\n";
+    std::cout << "  --blocks N               CUDA blocks (default: 256).\n";
+    std::cout << "  --threads N              Threads per block (default: 256).\n";
+    std::cout << "\n  Examples:\n";
+    std::cout << "    CPU: GpuCracker.exe --mode pubkey --pub-address 1PW... --pub-bit 66\n";
+    std::cout << "    GPU: GpuCracker.exe --mode pubkey --pub-address 1PW... --pub-bit 71 --type cuda\n";
+
+    std::cout << "\n--- BSGS MODE (Baby Step Giant Step) ---\n";
+    std::cout << "  MATHEMATICAL METHOD FOR DISCRETE LOGARITHM ON SECP256K1\n";
+    std::cout << "  Complexity: O(sqrt(n)) time, O(sqrt(n)) memory\n\n";
+    
+    std::cout << "  CORE OPTIONS:\n";
+    std::cout << "  --mode bsgs              Enable BSGS mode for private key recovery.\n";
+    std::cout << "  --bsgs-pub HEX           Target public key (compressed 66 chars or\n";
+    std::cout << "                            uncompressed 130 chars hex).\n";
+    std::cout << "  --bsgs-max N             Maximum key value to search (default: 2^40).\n";
+    std::cout << "                            Use for ranges up to 2^64.\n";
+    std::cout << "  --bsgs-range N           Search range: 0 to 2^N (supports N > 64).\n";
+    std::cout << "                            Example: --bsgs-range 135 for 2^135 range.\n";
+    std::cout << "  --bsgs-start OFFSET      Start search from specific offset.\n";
+    std::cout << "                            Supports large values (uint256_t).\n\n";
+    
+    std::cout << "  PERFORMANCE OPTIONS:\n";
+    std::cout << "  --bsgs-threads N         Number of CPU threads (0 = auto-detect).\n";
+    std::cout << "                            Recommend: physical cores × 2 for HT.\n";
+    std::cout << "  --bsgs-m N               Number of baby steps (default: auto from RAM).\n";
+    std::cout << "                            Memory per step: ~80B (hash) or ~8B (bloom).\n";
+    std::cout << "                            With 48GB RAM: max ~600M (hash) or 6B (bloom).\n";
+    std::cout << "  --bsgs-bloom             Enable Bloom filter (10x memory reduction).\n";
+    std::cout << "                            Trade-off: ~1% false positive rate.\n";
+    std::cout << "                            REQUIRED for large m values (>500M).\n";
+    std::cout << "  --bsgs-gpu               Enable GPU acceleration for giant steps.\n";
+    std::cout << "                            Auto-selects CUDA (NVIDIA) or OpenCL (AMD/Intel).\n";
+    std::cout << "                            Baby steps: CPU, Giant steps: GPU (10-100x speedup).\n\n";
+    
+    std::cout << "  SEGMENTED SEARCH (FOR RANGES > 2^64):\n";
+    std::cout << "  --bsgs-mode MODE         'sequential' (default) or 'random'.\n";
+    std::cout << "                            Use 'random' for ranges > 2^64.\n";
+    std::cout << "  --bsgs-segment-bits N    Segment size = 2^N keys.\n";
+    std::cout << "                            Default: m*m (optimal for BSGS).\n";
+    std::cout << "                            Range covered per segment: m × m keys.\n";
+    std::cout << "                            Example: m=1B → segment covers 2^60 keys.\n\n";
+    
+    std::cout << "  MULTI-TARGET BATCH SEARCH:\n";
+    std::cout << "  --bsgs-targets FILE      File with multiple public keys (one per line).\n";
+    std::cout << "                            Baby steps computed ONCE, reused for ALL.\n";
+    std::cout << "                            LINEAR SPEEDUP: 10,000 targets = time of 1!\n";
+    std::cout << "                            Each giant step checks ALL targets.\n";
+    std::cout << "                            Format: hex pubkeys, # for comments.\n\n";
+    
+    std::cout << "  CACHE & PERSISTENCE:\n";
+    std::cout << "  --bsgs-cache FILE        Custom cache file path.\n";
+    std::cout << "                            Default: bsgs_baby_steps_m<N>.cache\n";
+    std::cout << "                            Auto-loaded if m matches existing cache.\n";
+    std::cout << "                            Cache generation: 2-10 min for 1B steps.\n\n";
+    
+    std::cout << "  DISTRIBUTED / CLUSTER MODE:\n";
+    std::cout << "  --bsgs-node-id N         This node's ID (0 to M-1).\n";
+    std::cout << "  --bsgs-total-nodes M     Total nodes in cluster.\n";
+    std::cout << "                            Splits giant steps across nodes.\n";
+    std::cout << "                            Example: 4 nodes = 4x speedup.\n\n";
+    
+    std::cout << "  ADVANCED OPTIONS:\n";
+    std::cout << "  --bsgs-dp-bits N         Distinguished points (reduces memory).\n";
+    std::cout << "                            Memory reduction: 2^N, Time increase: 2^N.\n";
+    std::cout << "  --bsgs-stats-interval S  Progress update interval in seconds.\n";
+    std::cout << "  --bsgs-partition-bits N  Work stealing partitions (2^N partitions).\n\n";
+    
+    std::cout << "  ALGORITHM EXPLANATION:\n";
+    std::cout << "    BSGS solves: Q = k×G (find k given Q and G)\n";
+    std::cout << "    1. BABY STEPS: Precompute j×G for j in [0, m) → O(m) memory\n";
+    std::cout << "    2. GIANT STEPS: Check Q - i×m×G for i in [0, m) → O(m) time\n";
+    std::cout << "    3. MATCH: When Q - i×m×G = j×G → k = i×m + j\n";
+    std::cout << "    Complexity: O(sqrt(n)) for range of size n\n\n";
+    
+    std::cout << "  MEMORY CALCULATION (for 48GB RAM):\n";
+    std::cout << "    Without Bloom:  m_max = 48GB / 80B ≈ 600,000,000\n";
+    std::cout << "    With Bloom:     m_max = 48GB / 8B  ≈ 6,000,000,000\n";
+    std::cout << "    Coverage:       m² keys per segment\n";
+    std::cout << "    Example:        m=4B → covers 2^62 keys per segment\n\n";
+    
+    std::cout << "  RECOMMENDED CONFIGURATIONS:\n\n";
+    std::cout << "  1. Single target, range 2^50 (with 48GB RAM):\n";
+    std::cout << "     GpuCracker.exe --mode bsgs --bsgs-pub PUBKEY --bsgs-range 50\n";
+    std::cout << "       --bsgs-m 33554432 --bsgs-threads 16\n\n";
+    std::cout << "  2. Range 2^135 with random segments (48GB RAM + Bloom):\n";
+    std::cout << "     GpuCracker.exe --mode bsgs --bsgs-pub PUBKEY --bsgs-range 135\n";
+    std::cout << "       --bsgs-m 4000000000 --bsgs-bloom --bsgs-mode random\n";
+    std::cout << "       --bsgs-segment-bits 62 --bsgs-threads 16\n\n";
+    std::cout << "  3. Multi-target batch (34,000 targets):\n";
+    std::cout << "     GpuCracker.exe --mode bsgs --bsgs-targets pub.txt\n";
+    std::cout << "       --bsgs-m 1000000000 --bsgs-bloom --bsgs-threads 16\n";
+    std::cout << "       --bsgs-range 60 --bsgs-mode random\n\n";
+    std::cout << "  4. Continue from saved state:\n";
+    std::cout << "     GpuCracker.exe --mode bsgs --bsgs-targets pub.txt\n";
+    std::cout << "       --bsgs-m 4000000000 --bsgs-start 123456789012345\n\n";
+    
+    std::cout << "  OUTPUT FORMAT:\n";
+    std::cout << "    [PROGRESS] XX.XX% | Giant Steps: N/M | Total Keys: K\n";
+    std::cout << "               Speed: XXX MH/s | Found: F/T | ETA: Xm Ys\n";
+    std::cout << "    Speed units: H/s, kH/s, MH/s, GH/s, TH/s, PH/s, EH/s, ZH/s\n\n";
+    
+    std::cout << "  CACHE FILES:\n";
+    std::cout << "    Auto-generated: bsgs_baby_steps_m<N>.cache\n";
+    std::cout << "    Size: ~8-10 bytes per baby step (with Bloom)\n";
+    std::cout << "    Load time: ~1-2 minutes for 1B entries\n";
+    std::cout << "    Reuse: Use --bsgs-m N to load existing cache\n\n";
+    
+    std::cout << "  BLOOM FILTER ADDRESS CHECK (NEW):\n";
+    std::cout << "    --bloom-keys FILE(s)     Check generated addresses against Bloom filter(s).\n";
+    std::cout << "                              Multiple files: file1.blf,file2.blf\n";
+    std::cout << "                              If match found: outputs address + public key + private key\n";
+    std::cout << "                              Works with --bsgs-pub, --bsgs-targets, or standalone\n";
+    std::cout << "                              Example: --bloom-keys addresses.blf\n\n";
+    
+    std::cout << "  5. BSGS with Bloom address check:\n";
+    std::cout << "     GpuCracker.exe --mode bsgs --bsgs-range 135\n";
+    std::cout << "       --bsgs-m 1000000000 --bsgs-bloom\n";
+    std::cout << "       --bloom-keys addresses.blf\n\n";
+    
+    std::cout << "  6. BSGS with GPU acceleration (10-100x speedup):\n";
+    std::cout << "     GpuCracker.exe --mode bsgs --bsgs-pub PUBKEY\n";
+    std::cout << "       --bsgs-m 10000000 --bsgs-gpu\n";
+    std::cout << "       --bsgs-range 50 --bsgs-threads 4\n\n";
 
     std::cout << "\n--- CHECK MODE (Scanner/Verifier) ---\n";
     std::cout << "  --file FILE              Read seeds/keys/passwords from a text file.\n";
@@ -261,7 +509,12 @@ inline void printHelp() {
     std::cout << "  --mnemonic-brute VAL     Specific brute-force strategy (if implemented).\n";
 
     std::cout << "\n--- ADDRESS & PATH SETTINGS ---\n";
-    std::cout << "  --multi-coin LIST        Select coins (e.g. \"BTC, LTC, DOGE, DASH, BTG, ZCASH and ETH\"). Default: btc\n";
+    std::cout << "  --multi-coin COINS       Select multiple coins (100+ supported).\n";
+    std::cout << "                            Format: comma-separated, no spaces, uppercase.\n";
+    std::cout << "                            Example: --multi-coin BTC,ETH,LTC\n";
+    std::cout << "                            Supported: BTC,ETH,LTC,DOGE,DASH,BCH,BSV,BTG,ZEC,\n";
+    std::cout << "                            ETC,BNB,MATIC,AVAX,FTM,CRO,ATOM,DOT,SOL,ADA,etc.\n";
+    std::cout << "                            Default: btc\n";
     std::cout << "  --path-file FILE         Load custom derivation paths from file.\n";
     std::cout << "                            Format: m/44'/0'/0-5'/0/0 (supports ranges)\n";
     std::cout << "  --setaddress FILTER      Filter output/check generation.\n";
@@ -270,15 +523,29 @@ inline void printHelp() {
 	std::cout << "                            - Exemple : \"Comp P2PKH\", \"Uncomp P2PKH\", \"Bech32\", \"Comp P2SH\", etc. \n";
 
     std::cout << "\n--- AKM MODE SETTINGS (Puzzle) ---\n";
-    std::cout << "  --profile NAME           Select AKM Profile (e.g., akm3-puzzle71)\n";
+    std::cout << "  --profile NAME           Select specific AKM Profile by name (e.g., profile_004_slab_nucleu_v3.0)\n";
+    std::cout << "  --profile                Select random profile from akm_profile/ folder\n";
+    std::cout << "  --profile N              Select random profile, rotate every N seconds (e.g., --profile 5)\n";
     std::cout << "  --akm-bit LIST           Limit search bits (e.g. '66,67,71')\n";
     std::cout << "  --akm-word LIST          Set accepted phrase lengths (e.g. '12')\n";
     std::cout << "  --akm-mode MODE          Gen mode: random | schematic | wave\n";
-    std::cout << "  --akm-list-profiles      List available profiles and exit.\n";
+    std::cout << "  --akm-list-profiles      List all available profiles in akm_profile/ folder and exit.\n";
 
-    std::cout << "\n--- ESSENTIAL ---\n";
+    std::cout << "\n--- ADDRESS VERIFICATION (Required: Choose one) ---\n";
     std::cout << "  --bloom-keys FILE(s)     Path to the Bloom Filter file(s) (.blf)\n";
     std::cout << "                            Supports multiple files: file1.blf,file2.blf\n";
+    std::cout << "  --enable-explorer        Enable blockchain verification via local blk*.dat files.\n";
+    std::cout << "                            Requires --blockchain-dir to specify block files location.\n";
+    std::cout << "                            Starts web interface for monitoring (port 8080 by default).\n";
+    std::cout << "\n--- BLOCK EXPLORER (Web Interface) ---\n";
+    std::cout << "  --explorer-port PORT     Web server port (default: 8080).\n";
+    std::cout << "  --blockchain-dir PATH    Path to Bitcoin blk*.dat files for direct reading.\n";
+    std::cout << "                            Example: E:\\bin\\blocks\n";
+    std::cout << "  --index-dir PATH         Path to store/load the address index (optional).\n";
+    std::cout << "                            If not set, index is built in memory only.\n";
+    std::cout << "                            Example: --index-dir C:\\bitcoin_index\n";
+    std::cout << "  --explorer-force         Skip waiting for 80% indexing, start generation immediately.\n";
+    std::cout << "                            Generation starts while indexing continues in background.\n";
     std::cout << "  --infinite               Run continuously without stopping.\n";
     std::cout << "  --count N                Stop after checking N seeds/keys.\n";
     std::cout << "  --speed                  Show real GPU seed generation speed.\n";

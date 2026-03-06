@@ -1,6 +1,10 @@
 #pragma once
 #include "gpu_interface.h"
+
+#ifdef USE_CUDA
 #include <cuda_runtime.h>
+#endif
+
 #include <string>
 
 class CudaProvider : public IGpuProvider {

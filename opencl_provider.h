@@ -1,7 +1,9 @@
 #pragma once
 #include "gpu_interface.h"
 #include "utils.h"
+#ifndef NO_OPENCL
 #include <CL/cl.h>
+#endif
 #include <vector>
 #include <iostream>
 #include <string>

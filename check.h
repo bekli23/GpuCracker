@@ -18,7 +18,11 @@
 
 #include <openssl/sha.h>
 #include <openssl/ripemd.h>
+#ifndef NO_SECP256K1
 #include <secp256k1.h>
+#endif
+
+// RPC support removed - using blockchain file reader only
 
 // --- FIX FOR ETHUTILS REDEFINITION ---
 #define EthUtils EthUtils_Renamed_To_Avoid_Conflict
@@ -509,12 +513,15 @@ private:
     }
 
     bool localCheckAddress(const std::string& addr) {
+        // Use bloom filter for address checking
         if (!bloom.isLoaded()) return false;
         
+        // ETH-based addresses (0x...)
         if (addr.rfind("0x", 0) == 0 && addr.length() == 42) {
              return bloom.check_hash160(localHexToBytes(addr.substr(2)));
         }
         
+        // Base58 addresses (Legacy and P2SH)
         if (addr.length() >= 26 && addr.length() <= 35 && (addr[0] == '1' || addr[0] == '3')) {
             std::vector<uint8_t> decoded = localDecodeBase58(addr);
             if (decoded.size() == 25) {
@@ -522,6 +529,20 @@ private:
                 return bloom.check_hash160(hash160);
             }
         }
+        
+        // Bech32/Bech32m addresses (Native Segwit - P2WPKH)
+        // Only P2WPKH (20-byte witness program) can be checked with HASH160 bloom filter
+        if (addr.length() >= 14 && addr.substr(0, 3) == "bc1") {
+            std::string hrp;
+            std::vector<uint8_t> program;
+            int witver = Bech32::decode_segwit(addr, hrp, program);
+            // Only P2WPKH (v0, 20 bytes) uses HASH160
+            if (witver == 0 && program.size() == 20) {
+                return bloom.check_hash160(program);
+            }
+            // P2WSH (v0, 32 bytes) and P2TR (v1, 32 bytes) cannot be checked with HASH160 bloom
+        }
+        
         return false; 
     }
 
@@ -633,12 +654,12 @@ private:
     }
 
     void drawTableHeader() {
-        std::cout << "TYPE                PATH                        ADDRESS                                      STATUS\033[K\n";
-        std::cout << "--------------------------------------------------------------------------------------\033[K\n";
+        std::cout << "TYPE                PATH                           ADDRESS                                        STATUS\033[K\n";
+        std::cout << "---------------------------------------------------------------------------------------------\033[K\n";
     }
 
 public:
-    CheckMode(MnemonicTool& mt, const BloomFilter& bf, ProgramConfig c, std::atomic<bool>& r) 
+    CheckMode(MnemonicTool& mt, const BloomFilter& bf, ProgramConfig c, std::atomic<bool>& r, void* rpc = nullptr) 
         : mnemonicTool(mt), bloom(bf), cfg(c), running(r) {
         ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
     }
@@ -695,7 +716,20 @@ public:
             singleShot = true;
         }
         else if (isBrainwallet) {
-            // Internal generator
+            // Internal generator or file mode
+            if (cfg.brainwalletMode == "file") {
+                if (cfg.brainwalletFile.empty()) {
+                    std::cerr << "[ERROR] Brainwallet file mode requires --brain-file <path>\n";
+                    delete[] lineBuffer;
+                    return;
+                }
+                fpInput = fopen(cfg.brainwalletFile.c_str(), "rb");
+                if (!fpInput) {
+                    std::cerr << "[ERROR] Cannot open brainwallet file: " << cfg.brainwalletFile << "\n";
+                    delete[] lineBuffer;
+                    return;
+                }
+            }
         }
         else {
             std::cerr << "[ERROR] Check mode requires source.\n";
@@ -831,23 +865,21 @@ public:
                     }
 
                     if (!processedMnemonic.empty()) {
-                        res = mnemonicTool.processRawLine(processedMnemonic, bloom);
+                        res = mnemonicTool.processLineAuto(processedMnemonic, bloom);
                         res.entropyHex = displayEntropy; 
                     } else {
-                        res = mnemonicTool.processRawLine(line, bloom);
-                        if (res.entropyHex.find("Seed (") != std::string::npos) {
-                            std::string hexEnt = mnemonicToEntropyHex(res.mnemonic);
-                            if (hexEnt.find("Error") == std::string::npos) {
-                                std::string convertedEntropy;
-                                std::string label;
-                                if (cfg.entropyMode == "card") { convertedEntropy = EntropyConverter::toCards(hexEnt); label = " (Cards)"; }
-                                else if (cfg.entropyMode == "dice") { convertedEntropy = EntropyConverter::toDice(hexEnt); label = " (Dice)"; }
-                                else if (cfg.entropyMode == "bin") { convertedEntropy = EntropyConverter::toBinary(hexEnt); label = " (Binary)"; }
-                                else if (cfg.entropyMode == "base10") { convertedEntropy = EntropyConverter::toBase10(hexEnt); label = " (Base10)"; }
-                                else if (cfg.entropyMode == "base6") { convertedEntropy = EntropyConverter::toBase6(hexEnt); label = " (Base6)"; }
-                                else { convertedEntropy = hexEnt; label = " (Entropy)"; }
-                                res.entropyHex = convertedEntropy + label;
-                            }
+                        // Use auto-detection: BIP39 mnemonic or brainwallet
+                        res = mnemonicTool.processLineAuto(line, bloom);
+                        
+                        // If it was detected as BIP39, add entropy info
+                        if (res.rows.size() > 4 && res.entropyHex.length() > 0) {
+                            // It's a BIP39 phrase - entropyHex is already set
+                        }
+                        // If brainwallet, show the SHA256 hash
+                        else if (res.mnemonic == line) {
+                            unsigned char hash[SHA256_DIGEST_LENGTH];
+                            SHA256((const unsigned char*)line.c_str(), line.length(), hash);
+                            res.entropyHex = "SHA256: " + BytesToHex(std::vector<uint8_t>(hash, hash + 32));
                         }
                     }
                 }
@@ -860,7 +892,12 @@ public:
 
                 if (shouldPrint) {
                     std::cout << "\033[H=== Check Mode (CPU) ===\n";
-                    if (isBrainwallet) std::cout << "Input: BRAINWALLET (" << (fpInput ? "FILE" : cfg.brainwalletMode) << ")\033[K\n";
+                    if (isBrainwallet) {
+                        if (cfg.brainwalletMode == "file" && !cfg.brainwalletFile.empty())
+                            std::cout << "Input: BRAINWALLET FILE [" << cfg.brainwalletFile << "]\033[K\n";
+                        else
+                            std::cout << "Input: BRAINWALLET (" << cfg.brainwalletMode << ")\033[K\n";
+                    }
                     else if (singleShot) std::cout << "Input: Single Value\033[K\n";
                     else if (usingPipe) std::cout << "Input: EXEC [" << cfg.execCommand << "]\033[K\n";
                     else if (usingSocket) std::cout << "Input: SOCKET [" << cfg.socketPath << "]\033[K\n";
@@ -883,7 +920,8 @@ public:
                             std::cout << "\n";
                         } 
                         else {
-                            std::cout << (isBrainwallet ? "Pass:   " : "Phrase: ") << res.mnemonic << "\033[K\n";
+                            std::cout << "Seed #  " << count << "\033[K\n";
+                            std::cout << (isBrainwallet ? "Pass:   " : "Phrase/Key: ") << res.mnemonic << "\033[K\n";
                             std::cout << "PrivKey: " << res.entropyHex << "\033[K\n\n";
                         }
                     } else {
@@ -898,7 +936,13 @@ public:
                         // [MODIFICAT AICI]: Marim limita de afisare la 500
                         if(rowsPrinted >= 500) break;
                         rowsPrinted++;
-                        std::cout << std::left << std::setw(20) << row.type << std::setw(28) << row.path << std::setw(45) << row.addr;
+                        // Aliniere fixă pe coloane: TYPE(20) + PATH(31) + ADDRESS(47) + STATUS
+                        std::string typeCol = row.type.substr(0, 19);
+                        std::string pathCol = row.path.substr(0, 30);
+                        std::string addrCol = row.addr.substr(0, 46);
+                        std::cout << std::left << std::setw(20) << typeCol 
+                                  << std::setw(31) << pathCol 
+                                  << std::setw(47) << addrCol;
                         if(row.isHit) {
                             std::cout << "\033[1;32mHIT\033[0m";
                             logHit((isExternalLog ? "Log Stream" : res.mnemonic), row.addr, row.path);
@@ -909,7 +953,7 @@ public:
                     if (rowsPrinted < 22) {
                         for(int i = rowsPrinted; i < 22; i++) std::cout << "\033[K\n";
                     }
-                    std::cout << "--------------------------------------------------------------------------------------\033[K\n";
+                    std::cout << "---------------------------------------------------------------------------------------------\033[K\n";
                     std::cout << "Checked: " << count << " | Speed: " << formatUnits((double)totalAddrChecked / elapsed, "addr/s") << "    \033[K\n";
                 }
             }

@@ -5,7 +5,9 @@
 #include <fstream>
 
 // Includem OpenCL din vcpkg
+#ifndef NO_OPENCL
 #include <CL/cl.h>
+#endif
 
 class OpenCLProvider {
 private:

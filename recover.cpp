@@ -21,7 +21,9 @@
 #include <openssl/ripemd.h>
 #include <openssl/hmac.h>
 #include <openssl/evp.h>
+#ifndef NO_SECP256K1
 #include <secp256k1.h>
+#endif
 
 // Includem DOAR multicoin.h pentru Keccak (ETH). 
 #include "multicoin.h"

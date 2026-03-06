@@ -13,11 +13,15 @@
 
 #include <openssl/sha.h>
 #include <openssl/ripemd.h>
+#ifndef NO_SECP256K1
 #include <secp256k1.h>
+#endif
 
 #include "utils.h"
 #include "bloom.h"
 #include "akm.h"
+#include "multicoin.h"
+#include "coin_database.h"
 
 // Definitie pentru functia CUDA externa (trebuie sa coincida cu GpuCore.cu)
 extern "C" void launch_gpu_akm_search(
@@ -47,6 +51,7 @@ class AkmTool {
 private:
     AkmLogic akm;
     secp256k1_context* ctx;
+    std::vector<std::string> activeCoins;  // Multi-coin support
     
     // Stocare pentru partea superioara a cheii (peste 64 biti)
     // Util pentru puzzle-uri unde stim prefixul (ex: 50xxxxxx...)
@@ -184,12 +189,24 @@ private:
     }
 
 public:
-    AkmTool() { ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY); }
+    AkmTool() { 
+        ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY); 
+        activeCoins = {"btc"}; // Default to BTC
+    }
     ~AkmTool() { if (ctx) secp256k1_context_destroy(ctx); }
 	const std::vector<uint8_t>& getHighBytes() const { return highBytes; }
 
     void init(const std::string& profile, const std::string& wordlistPath) {
         akm.init(profile, wordlistPath);
+    }
+    
+    // Set active coins for multi-coin support
+    void setActiveCoins(const std::vector<std::string>& coins) {
+        activeCoins = coins;
+        // Default to BTC if empty
+        if (activeCoins.empty()) {
+            activeCoins.push_back("btc");
+        }
     }
 
     // [NOU - Aceasta este functia care lipsea]
@@ -211,12 +228,21 @@ public:
         const std::vector<std::string>& akmWords = akm.getWordList();
         size_t akmSize = akmWords.size();
 
-        if (akmSize == 0) return result;
+
+
+        if (akmSize == 0) {
+            std::cout << "[ERROR] AKM wordlist is empty!\n";
+            return result;
+        }
 
         if (order == "random") {
             // Generare aleatorie completa (ignorand secventialitatea)
             std::mt19937_64 r(seed);
             int byteLen = (targetBits + 7) / 8;
+            // If targetBits=0, generate full 32 bytes, otherwise generate up to targetBits
+            if (targetBits == 0) {
+                byteLen = 32; // Full key random generation
+            }
             for(int i=0; i<byteLen; i++) directKey[31-i] = r() % 256;
             if (targetBits > 0) setTargetBit(directKey, targetBits); 
         } else {
@@ -243,7 +269,7 @@ public:
         }
 
         result.hexKey = toHex(directKey);
-
+        
         // Convertire cheie -> Cuvinte AKM (Base Conversion)
         std::vector<uint8_t> tempForWords = directKey;
         std::vector<std::string> phraseWords;
@@ -253,7 +279,7 @@ public:
         }
         for (const auto& w : phraseWords) result.phrase += w + " ";
 
-        // Derivare Chei Publice & Adrese
+        // Derivare Chei Publice & Adrese (Multi-Coin Support)
         secp256k1_pubkey pubkey;
         if (secp256k1_ec_pubkey_create(ctx, &pubkey, directKey.data())) {
             uint8_t cPub[33], uPub[65];
@@ -262,25 +288,106 @@ public:
 
             std::vector<uint8_t> vPubC(cPub, cPub + 33), vPubU(uPub, uPub + 65);
 
-            struct Check { std::string label, addr; std::vector<uint8_t> payloadData; };
-            std::vector<Check> checks;
-            checks.push_back({"Comp P2PKH",   PubKeyToLegacy(vPubC),        vPubC});
-            checks.push_back({"Uncomp P2PKH", PubKeyToLegacy(vPubU),        vPubU});
-            checks.push_back({"Comp P2SH",    PubKeyToNestedSegwit(vPubC),  vPubC});
-            checks.push_back({"Bech32",       PubKeyToNativeSegwit(vPubC),  vPubC});
+            // Generate addresses for all active coins
+            for (const auto& coinSymbol : activeCoins) {
+                std::string coin = coinSymbol;
+                std::transform(coin.begin(), coin.end(), coin.begin(), ::tolower);
+                
+                std::string coinUpper = coin;
+                std::transform(coinUpper.begin(), coinUpper.end(), coinUpper.begin(), ::toupper);
+                
+                CoinInfo coinInfo = CoinDatabase::getCoinBySymbol(coin);
 
-            for (const auto& c : checks) {
-                std::vector<uint8_t> payload;
-                if (c.label.find("P2SH") != std::string::npos) {
-                    std::vector<uint8_t> kH; Hash160(c.payloadData, kH);
-                    std::vector<uint8_t> r = { 0x00, 0x14 }; r.insert(r.end(), kH.begin(), kH.end());
-                    Hash160(r, payload);
-                } else {
-                    Hash160(c.payloadData, payload);
+                if (coinInfo.isEthereumBased) {
+                    // Ethereum-based coins (ETH, ETC, BNB, MATIC, AVAX, FTM, CRO, DeFi tokens, etc.)
+                    std::string ethAddr = MultiCoin::GenEth(vPubU);
+                    if (!ethAddr.empty() && ethAddr.substr(0, 2) == "0x") {
+                        std::vector<uint8_t> payload;
+                        for (size_t i = 2; i < ethAddr.length(); i += 2) {
+                            payload.push_back((uint8_t)std::stoi(ethAddr.substr(i, 2), nullptr, 16));
+                        }
+                        bool isHit = bloom.isLoaded() ? bloom.check_hash160(payload) : false;
+                        std::string path = "m/44'/" + std::to_string(coinInfo.slip44) + "'/0'/0/0";
+                        result.rows.push_back({coinUpper + "-AKM", path, ethAddr, (isHit ? "HIT" : "-"), isHit});
+                    }
+                } 
+                else if (coin == "atom") {
+                    // Cosmos (ATOM)
+                    std::string atomAddr = MultiCoin::GenCosmos(vPubC);
+                    if (!atomAddr.empty()) {
+                        std::vector<uint8_t> h160; MultiCoin::PublicHash160(vPubC, h160);
+                        bool isHit = bloom.isLoaded() ? bloom.check_hash160(h160) : false;
+                        result.rows.push_back({coinUpper + "-AKM", "m/44'/118'/0'/0/0", atomAddr, (isHit ? "HIT" : "-"), isHit});
+                    }
                 }
-
-                bool isHit = bloom.isLoaded() ? bloom.check_hash160(payload) : false;
-                result.rows.push_back({"AKM", c.label, c.addr, (isHit ? "HIT" : "-"), isHit});
+                else if (coin == "dot") {
+                    // Polkadot (DOT) - simplified
+                    std::string dotAddr = MultiCoin::GenPolkadot(vPubC);
+                    if (!dotAddr.empty() && dotAddr.substr(0, 3) != "DOT") {
+                        std::vector<uint8_t> h160; MultiCoin::PublicHash160(vPubC, h160);
+                        bool isHit = bloom.isLoaded() ? bloom.check_hash160(h160) : false;
+                        result.rows.push_back({coinUpper + "-AKM", "m/44'/354'/0'/0/0", dotAddr, (isHit ? "HIT" : "-"), isHit});
+                    }
+                }
+                else if (coin == "sol") {
+                    // Solana (SOL)
+                    std::string solAddr = MultiCoin::GenSolana(vPubC);
+                    if (!solAddr.empty()) {
+                        std::vector<uint8_t> h160; MultiCoin::PublicHash160(vPubC, h160);
+                        bool isHit = bloom.isLoaded() ? bloom.check_hash160(h160) : false;
+                        result.rows.push_back({coinUpper + "-AKM", "m/44'/501'/0'/0'", solAddr, (isHit ? "HIT" : "-"), isHit});
+                    }
+                }
+                else if (coin == "ada") {
+                    // Cardano (ADA)
+                    std::string adaAddr = MultiCoin::GenCardano(vPubC);
+                    if (!adaAddr.empty()) {
+                        std::vector<uint8_t> h160; MultiCoin::PublicHash160(vPubC, h160);
+                        bool isHit = bloom.isLoaded() ? bloom.check_hash160(h160) : false;
+                        result.rows.push_back({coinUpper + "-AKM", "m/1852'/1815'/0'/0/0", adaAddr, (isHit ? "HIT" : "-"), isHit});
+                    }
+                }
+                else {
+                    // Bitcoin-derived coins (BTC, LTC, DOGE, DASH, BTG, ZEC, BCH, BSV, etc.)
+                    std::string path44 = "m/44'/" + std::to_string(coinInfo.slip44) + "'/0'/0/0";
+                    
+                    // 1. Legacy (P2PKH)
+                    std::string legacyAddr = MultiCoin::GenLegacy(vPubC, coin);
+                    if (!legacyAddr.empty()) {
+                        std::vector<uint8_t> h160; MultiCoin::PublicHash160(vPubC, h160);
+                        bool isHit = bloom.isLoaded() ? bloom.check_hash160(h160) : false;
+                        result.rows.push_back({coinUpper + "-AKM [Legacy]", path44, legacyAddr, (isHit ? "HIT" : "-"), isHit});
+                    }
+                    
+                    // 2. Legacy Uncompressed
+                    std::string legacyUncompAddr = MultiCoin::GenLegacy(vPubU, coin);
+                    if (!legacyUncompAddr.empty() && legacyUncompAddr != legacyAddr) {
+                        std::vector<uint8_t> h160; MultiCoin::PublicHash160(vPubU, h160);
+                        bool isHit = bloom.isLoaded() ? bloom.check_hash160(h160) : false;
+                        result.rows.push_back({coinUpper + "-AKM [Legacy Uncomp]", path44, legacyUncompAddr, (isHit ? "HIT" : "-"), isHit});
+                    }
+                    
+                    // 3. P2SH (Segwit)
+                    std::string p2shAddr = MultiCoin::GenP2SH(vPubC, coin);
+                    if (!p2shAddr.empty()) {
+                        std::vector<uint8_t> pubHash; MultiCoin::PublicHash160(vPubC, pubHash);
+                        std::vector<uint8_t> script = { 0x00, 0x14 };
+                        script.insert(script.end(), pubHash.begin(), pubHash.end());
+                        std::vector<uint8_t> scriptHash; MultiCoin::PublicHash160(script, scriptHash);
+                        bool isHit = bloom.isLoaded() ? bloom.check_hash160(scriptHash) : false;
+                        std::string path49 = "m/49'/" + std::to_string(coinInfo.slip44) + "'/0'/0/0";
+                        result.rows.push_back({coinUpper + "-AKM [P2SH]", path49, p2shAddr, (isHit ? "HIT" : "-"), isHit});
+                    }
+                    
+                    // 4. Bech32 (Native Segwit)
+                    std::string bech32Addr = MultiCoin::GenBech32(vPubC, coin);
+                    if (!bech32Addr.empty() && bech32Addr.substr(0, 3) != "BCH") {
+                        std::vector<uint8_t> h160; MultiCoin::PublicHash160(vPubC, h160);
+                        bool isHit = bloom.isLoaded() ? bloom.check_hash160(h160) : false;
+                        std::string path84 = "m/84'/" + std::to_string(coinInfo.slip44) + "'/0'/0/0";
+                        result.rows.push_back({coinUpper + "-AKM [Bech32]", path84, bech32Addr, (isHit ? "HIT" : "-"), isHit});
+                    }
+                }
             }
         }
         return result;
@@ -288,4 +395,6 @@ public:
 
     size_t getWordCount() { return akm.getWordCount(); }
     void listProfiles() { akm.listProfiles(); }
+    
+
 };

@@ -11,7 +11,9 @@
 #include <algorithm>
 #include <cstdint>
 
+#ifndef NO_SECP256K1
 #include <secp256k1.h>
+#endif
 #include "multicoin.h"
 
 void FillPrivateKey(uint64_t counter, std::vector<uint8_t>& outKey) {

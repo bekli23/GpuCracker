@@ -652,10 +652,193 @@ __global__ void akm_search_kernel_range(
 }
 
 // ============================================================================
-//  9. HOST LAUNCHER (Actualizat)
+//  10. PUBKEY SEARCH KERNEL (NEW)
+// ============================================================================
+
+// Target address hash160 storage (constant memory for fast access)
+__constant__ uint8_t _TARGET_HASH160[20];
+__constant__ uint32_t _PUBKEY_START_KEY[8]; // 256-bit start key
+
+// Increment u256 by 1
+__device__ void u256_inc(u256* a) {
+    uint32_t carry = 1;
+    for(int i = 0; i < 8 && carry; i++) {
+        uint32_t sum = a->v[i] + carry;
+        carry = (sum < a->v[i]) ? 1 : 0;
+        a->v[i] = sum;
+    }
+}
+
+// Add two u256 values
+__device__ void u256_add(u256* r, const u256* a, const u256* b) {
+    uint32_t carry = 0;
+    for(int i = 0; i < 8; i++) {
+        uint32_t sum = a->v[i] + b->v[i] + carry;
+        carry = ((sum < a->v[i]) || (carry && sum == a->v[i])) ? 1 : 0;
+        r->v[i] = sum;
+    }
+}
+
+// Convert u256 to bytes (big-endian)
+__device__ void u256_to_bytes(uint8_t* out, const u256* a) {
+    #pragma unroll
+    for(int i = 0; i < 8; i++) {
+        out[31 - i*4]   = (a->v[i] >> 24) & 0xFF;
+        out[30 - i*4] = (a->v[i] >> 16) & 0xFF;
+        out[29 - i*4] = (a->v[i] >> 8)  & 0xFF;
+        out[28 - i*4] = (a->v[i])       & 0xFF;
+    }
+}
+
+// Pubkey search kernel - sequential search from start key
+__global__ void pubkey_search_kernel_p2pkh(
+    const u256 startKey,
+    unsigned long long stride,
+    int points,
+    unsigned long long* outFoundKeysLow,
+    unsigned long long* outFoundKeysHigh,
+    int* outFoundCount,
+    int maxResults
+) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    u256 privKey;
+    u256 offset;
+    set_int(&offset, 0);
+    
+    // Calculate offset = tid * points
+    // For simplicity, using 64-bit offset calculation
+    unsigned long long totalOffset = (unsigned long long)tid * (unsigned long long)points;
+    
+    // Initialize private key = startKey + totalOffset
+    privKey = startKey;
+    
+    // Add offset (simplified - only handles 64-bit offsets)
+    uint32_t carry = 0;
+    #pragma unroll
+    for(int i = 0; i < 2; i++) {
+        uint32_t offsetWord = (uint32_t)(totalOffset >> (i * 32));
+        uint32_t sum = privKey.v[i] + offsetWord + carry;
+        carry = ((sum < privKey.v[i]) || (carry && sum == privKey.v[i])) ? 1 : 0;
+        privKey.v[i] = sum;
+    }
+    if(carry) {
+        for(int i = 2; i < 8 && carry; i++) {
+            privKey.v[i] += carry;
+            carry = (privKey.v[i] == 0) ? 1 : 0;
+        }
+    }
+    
+    #pragma unroll 1
+    for(int p = 0; p < points; p++) {
+        // Generate public key
+        Point pub = ec_scalar_mul(&privKey);
+        
+        if(!is_zero(&pub.z)) {
+            u256 pubX = pub.x;
+            u256 pubY = pub.y;
+            
+            // Determine parity for compressed key
+            uint8_t parity = (pubY.v[0] & 1) ? 0x03 : 0x02;
+            
+            // Create compressed public key bytes
+            uint8_t pubKeyBytes[33];
+            pubKeyBytes[0] = parity;
+            u256_to_bytes(pubKeyBytes + 1, &pubX);
+            
+            // Hash160: SHA256 then RIPEMD160
+            uint32_t shaState[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 };
+            sha256_transform(shaState, pubKeyBytes, 33);
+            
+            uint8_t shaBytes[32];
+            #pragma unroll
+            for(int i=0; i<8; i++) {
+                shaBytes[i*4]   = (shaState[i] >> 24) & 0xFF;
+                shaBytes[i*4+1] = (shaState[i] >> 16) & 0xFF;
+                shaBytes[i*4+2] = (shaState[i] >> 8)  & 0xFF;
+                shaBytes[i*4+3] = (shaState[i])       & 0xFF;
+            }
+            
+            uint32_t ripemdState[5] = { 0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0 };
+            ripemd160_final(ripemdState, shaBytes, 32);
+            
+            uint8_t hash160[20];
+            #pragma unroll
+            for(int i=0; i<5; i++) {
+                hash160[i*4]   = (ripemdState[i])       & 0xFF;
+                hash160[i*4+1] = (ripemdState[i] >> 8)  & 0xFF;
+                hash160[i*4+2] = (ripemdState[i] >> 16) & 0xFF;
+                hash160[i*4+3] = (ripemdState[i] >> 24) & 0xFF;
+            }
+            
+            // Compare with target hash160
+            bool match = true;
+            #pragma unroll
+            for(int i = 0; i < 20; i++) {
+                if(hash160[i] != _TARGET_HASH160[i]) {
+                    match = false;
+                    break;
+                }
+            }
+            
+            if(match) {
+                int pos = atomicAdd(outFoundCount, 1);
+                if(pos < maxResults) {
+                    outFoundKeysLow[pos] = ((unsigned long long*)privKey.v)[0];
+                    outFoundKeysHigh[pos] = ((unsigned long long*)privKey.v)[1];
+                }
+            }
+        }
+        
+        // Increment private key by stride
+        u256_inc(&privKey);
+        u256 step;
+        set_int(&step, 0);
+        step.v[0] = (uint32_t)(stride & 0xFFFFFFFF);
+        step.v[1] = (uint32_t)(stride >> 32);
+        u256_add(&privKey, &privKey, &step);
+    }
+}
+
+// ============================================================================
+//  11. HOST LAUNCHER (Actualizat)
 // ============================================================================
 static uint8_t* d_bloomData = nullptr;
 static size_t d_bloomSize = 0;
+
+// Host launcher for pubkey search
+extern "C" void launch_gpu_pubkey_search(
+    const uint32_t* startKey,      // 8 x uint32_t = 256-bit start key
+    const uint8_t* targetHash160,  // 20 bytes target hash160
+    int blocks,
+    int threads,
+    int points,
+    unsigned long long* outFoundKeysLow,
+    unsigned long long* outFoundKeysHigh,
+    int* outFoundCount,
+    int maxResults
+) {
+    // Copy target hash160 to constant memory
+    cudaMemcpyToSymbol(_TARGET_HASH160, targetHash160, 20);
+    
+    // Copy start key
+    u256 h_startKey;
+    memcpy(h_startKey.v, startKey, 32);
+    
+    int totalThreads = blocks * threads;
+    
+    pubkey_search_kernel_p2pkh<<<blocks, threads>>>(
+        h_startKey,
+        (unsigned long long)totalThreads,
+        points,
+        outFoundKeysLow,
+        outFoundKeysHigh,
+        outFoundCount,
+        maxResults
+    );
+    
+    cudaDeviceSynchronize();
+}
 
 extern "C" void launch_gpu_akm_search(
     unsigned long long startSeed, 

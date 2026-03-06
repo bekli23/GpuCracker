@@ -14,7 +14,9 @@
 // Includem headerele proiectului
 #include "akm.h"
 #include "utils.h" 
+#ifndef NO_SECP256K1
 #include <secp256k1.h>
+#endif
 
 // --- HELPER FUNCTIONS ---
 

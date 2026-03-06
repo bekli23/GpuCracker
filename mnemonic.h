@@ -28,6 +28,8 @@
 #include "multicoin.h" 
 #include "bloom.h"
 
+// RPC support removed - using blockchain file reader only
+
 struct RowInfo { 
     std::string type; 
     std::string path; 
@@ -50,6 +52,7 @@ struct PathInfo {
     PathInfo(std::string l, std::string p, std::string c = "BTC") 
         : label(l), path(p), coin(c) {}
 };
+#define PATH_INFO_DEFINED
 
 // ============================================================================
 // OPENSSL & SECP256K1
@@ -59,7 +62,9 @@ struct PathInfo {
     #include <openssl/ripemd.h>
     #include <openssl/hmac.h>
     #include <openssl/evp.h>
+    #ifndef NO_SECP256K1
     #include <secp256k1.h>
+    #endif
 #endif
 
 #include "utils.h"
@@ -69,10 +74,12 @@ struct PathInfo {
 // ============================================================================
 #ifndef __CUDACC__
 
+#ifdef HAS_CUDA
 extern "C" {
     void launch_gpu_init(const char* host_wordlist, int length, int wordCount);
     void launch_gpu_mnemonic_search(unsigned long long start, unsigned long long count, int b, int t, const void* bf, size_t sz, unsigned long long* res, int* cnt);
 }
+#endif
 
 class Bip32 {
 public:
@@ -134,7 +141,7 @@ class MnemonicTool {
 private:
     std::vector<std::string> wordlist;
     secp256k1_context* ctx;
-    std::vector<PathInfo> activePaths; 
+    std::vector<PathInfo> activePaths;
 
     static constexpr const char* pszBase58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -244,13 +251,16 @@ public:
     ~MnemonicTool() { if (ctx) secp256k1_context_destroy(ctx); }
     void setPaths(const std::vector<PathInfo>& paths) { activePaths = paths; }
     
-    // Verificare Bloom
+    // Check address in bloom filter
     bool checkAddressInBloom(const std::string& addr, const BloomFilter& bloom) {
+        // Use bloom filter
         if (!bloom.isLoaded()) return false;
+        
         // Hex (ETH)
         if (addr.rfind("0x", 0) == 0 && addr.length() == 42) {
              return bloom.check_hash160(HexToBytes(addr.substr(2)));
         }
+        
         // Base58 (BTC, LTC, etc.)
         if (addr.length() >= 26 && addr.length() <= 35) {
             std::vector<uint8_t> decoded = DecodeBase58(addr);
@@ -260,20 +270,50 @@ public:
                 return bloom.check_hash160(h160);
             }
         }
+        
+        // Bech32/Bech32m addresses (Native Segwit - P2WPKH)
+        // Only P2WPKH (20-byte witness program) can be checked with HASH160 bloom filter
+        if (addr.length() >= 14 && addr.substr(0, 3) == "bc1") {
+            std::string hrp;
+            std::vector<uint8_t> program;
+            int witver = Bech32::decode_segwit(addr, hrp, program);
+            // Only P2WPKH (v0, 20 bytes) uses HASH160
+            if (witver == 0 && program.size() == 20) {
+                return bloom.check_hash160(program);
+            }
+            // P2WSH (v0, 32 bytes) and P2TR (v1, 32 bytes) cannot be checked with HASH160 bloom
+        }
+        
         return false; 
     }
 
     bool loadWordlist(const std::string& lang) {
         std::vector<std::string> search_paths = { lang, "bip39/" + lang + ".txt", "bip39/" + lang };
         std::ifstream file;
-        for (const auto& p : search_paths) { file.open(p); if (file.is_open()) break; }
-        if (!file.is_open()) return false;
+        std::string found_path = "";
+        for (const auto& p : search_paths) { 
+            file.open(p); 
+            if (file.is_open()) { 
+                found_path = p;
+                break; 
+            } 
+        }
+        if (!file.is_open()) {
+            std::cout << "[WARN] Could not find wordlist for: " << lang << "\n";
+            std::cout << "[WARN] Tried paths: \n";
+            for (const auto& p : search_paths) {
+                std::cout << "  - " << p << "\n";
+            }
+            return false;
+        }
+        std::cout << "[INFO] Loading wordlist from: " << found_path << "\n";
         wordlist.clear();
         std::string line;
         while (std::getline(file, line)) {
             line.erase(line.find_last_not_of(" \n\r\t") + 1);
             if (!line.empty()) wordlist.push_back(line);
         }
+        std::cout << "[INFO] Loaded " << wordlist.size() << " words into MnemonicTool\n";
         return (wordlist.size() > 0);
     }
 
@@ -329,9 +369,9 @@ public:
         std::string p2sh = MultiCoin::GenP2SH(vPubC, "BTC");
         result.rows.push_back({"Brainwallet [BTC P2SH]", "Raw", p2sh, wifComp, checkAddressInBloom(p2sh, bloom)});
 
-        // BTC Bech32
+        // BTC BIP141/Bech32 (Native SegWit)
         std::string bech = MultiCoin::GenBech32(vPubC, "BTC");
-        result.rows.push_back({"Brainwallet [BTC Bech32]", "Raw", bech, wifComp, checkAddressInBloom(bech, bloom)});
+        result.rows.push_back({"Brainwallet [BTC BIP141/Bech32]", "Raw", bech, wifComp, checkAddressInBloom(bech, bloom)});
     }
 
     // --- LOGICA CENTRALA DE DERIVARE MULTI-COIN ---
@@ -362,7 +402,11 @@ public:
             struct AddrGen { std::string type; std::string val; };
             std::vector<AddrGen> addrs;
 
-            if (p.coin == "ETH") {
+            // Convert coin to uppercase for case-insensitive comparison
+            std::string coinUpper = p.coin;
+            std::transform(coinUpper.begin(), coinUpper.end(), coinUpper.begin(), ::toupper);
+            
+            if (coinUpper == "ETH") {
                 addrs.push_back({ "ETH", MultiCoin::GenEth(vPubU) });
             } 
             else {
@@ -374,10 +418,10 @@ public:
                 // 2. P2SH (Segwit)
                 addrs.push_back({ p.coin + "-" + p.label + " [P2SH]", MultiCoin::GenP2SH(vPubC, p.coin) });
 
-                // 3. Bech32 (Daca moneda suporta, functia returneaza string gol daca nu)
+                // 3. Bech32 / BIP141 (Native SegWit)
                 std::string b32 = MultiCoin::GenBech32(vPubC, p.coin);
                 if (!b32.empty()) {
-                     addrs.push_back({ p.coin + "-" + p.label + " [Bech32]", b32 });
+                     addrs.push_back({ p.coin + "-" + p.label + " [BIP141/Bech32]", b32 });
                 }
             }
 
@@ -387,6 +431,86 @@ public:
                 result.rows.push_back({ ag.type, p.path, ag.val, "", hit });
             }
         }
+    }
+
+    // --- Procesare XPRV (Extended Private Key) ---
+    MnemonicResult processXprv(const std::string& xprv, const BloomFilter& bf) {
+        MnemonicResult r;
+        r.mnemonic = xprv;
+        r.entropyHex = "XPRV-BASE58";
+        
+        std::vector<uint8_t> parentKey, parentChain;
+        if (!decodeXprv(xprv, parentKey, parentChain)) {
+            r.mnemonic = "ERROR_INVALID_XPRV";
+            return r;
+        }
+        
+        // Daca nu avem cai definiti, folosim cai default pentru XPRV
+        std::vector<PathInfo> pathsToCheck = activePaths;
+        if (pathsToCheck.empty()) {
+            // Default paths for XPRV (similar to mnemonic paths)
+            pathsToCheck = {
+                PathInfo("BIP32", "m/0", "BTC"),
+                PathInfo("BIP44", "m/44'/0'/0'/0/0", "BTC"),
+                PathInfo("BIP49", "m/49'/0'/0'/0/0", "BTC"),
+                PathInfo("BIP84", "m/84'/0'/0'/0/0", "BTC"),
+            };
+        }
+        
+        for (auto& p : pathsToCheck) {
+            std::vector<uint8_t> childKey;
+            Bip32::DeriveFromXprv(ctx, parentKey, parentChain, p.path, childKey);
+            
+            if (childKey.empty()) continue;
+            
+            // Generare PubKey din PrivKey
+            secp256k1_pubkey pub;
+            if (!secp256k1_ec_pubkey_create(ctx, &pub, childKey.data())) continue;
+
+            // Compressed Public Key
+            uint8_t cPub[33]; size_t clen = 33;
+            secp256k1_ec_pubkey_serialize(ctx, cPub, &clen, &pub, SECP256K1_EC_COMPRESSED);
+            std::vector<uint8_t> vPubC(cPub, cPub + 33);
+
+            // Uncompressed Public Key
+            uint8_t uPub[65]; size_t ulen = 65;
+            secp256k1_ec_pubkey_serialize(ctx, uPub, &ulen, &pub, SECP256K1_EC_UNCOMPRESSED);
+            std::vector<uint8_t> vPubU(uPub, uPub + 65);
+
+            // GENERARE ADRESE
+            std::string coinUpper = p.coin;
+            std::transform(coinUpper.begin(), coinUpper.end(), coinUpper.begin(), ::toupper);
+            
+            if (coinUpper == "ETH") {
+                std::string addr = MultiCoin::GenEth(vPubU);
+                bool hit = checkAddressInBloom(addr, bf);
+                r.rows.push_back({p.coin + "-" + p.label + " [ETH]", p.path, addr, "", hit});
+            } else {
+                // Legacy
+                std::string leg = MultiCoin::GenLegacy(vPubC, p.coin);
+                bool hit1 = checkAddressInBloom(leg, bf);
+                r.rows.push_back({p.coin + "-" + p.label + " [Legacy]", p.path, leg, "", hit1});
+                
+                // Legacy Uncompressed
+                std::string legU = MultiCoin::GenLegacy(vPubU, p.coin);
+                bool hit2 = checkAddressInBloom(legU, bf);
+                r.rows.push_back({p.coin + "-" + p.label + " [Legacy Uncomp]", p.path, legU, "", hit2});
+                
+                // P2SH
+                std::string p2sh = MultiCoin::GenP2SH(vPubC, p.coin);
+                bool hit3 = checkAddressInBloom(p2sh, bf);
+                r.rows.push_back({p.coin + "-" + p.label + " [P2SH]", p.path, p2sh, "", hit3});
+                
+                // Bech32/BIP141
+                std::string b32 = MultiCoin::GenBech32(vPubC, p.coin);
+                if (!b32.empty()) {
+                    bool hit4 = checkAddressInBloom(b32, bf);
+                    r.rows.push_back({p.coin + "-" + p.label + " [BIP141/Bech32]", p.path, b32, "", hit4});
+                }
+            }
+        }
+        
+        return r;
     }
 
     // --- Procesare Raw Line (Brainwallet / Import) ---
@@ -408,7 +532,13 @@ public:
     // --- Functia Principala ---
     MnemonicResult processSeed(unsigned long long seedVal, std::string order, int wordCount, const BloomFilter& bloom, const std::string& filter = "ALL", const std::string& entropyMode = "default", std::string explicitPhrase = "") {
         MnemonicResult result;
-        if (!explicitPhrase.empty()) return processRawLine(explicitPhrase, bloom);
+        if (!explicitPhrase.empty()) {
+            // Check if it's an XPRV (Extended Private Key)
+            if (explicitPhrase.substr(0, 4) == "xprv") {
+                return processXprv(explicitPhrase, bloom);
+            }
+            return processRawLine(explicitPhrase, bloom);
+        }
 
         int entropyBytesLen = (wordCount * 11 - wordCount / 3) / 8;
         if(entropyBytesLen <= 0) entropyBytesLen = 32;
@@ -416,7 +546,7 @@ public:
         std::vector<uint8_t> ent;
         std::string visualInfo = "";
 
-        if (entropyMode == "schematic") {
+        if (entropyMode == "schematic" || order == "schematic") {
             ent = generateSchematicEntropy(seedVal, entropyBytesLen);
             result.entropyHex = BytesToHex(ent);
         }
@@ -430,7 +560,10 @@ public:
             result.entropyHex = BytesToHex(ent);
         }
 
-        if (wordlist.empty()) return result;
+        if (wordlist.empty()) {
+            std::cout << "[ERROR] MnemonicTool wordlist is empty! Cannot generate mnemonic.\n";
+            return result;
+        }
 
         // Generare Mnemonic
         uint8_t h[32]; SHA256(ent.data(), ent.size(), h);
@@ -467,6 +600,97 @@ public:
     
     std::vector<uint8_t> generateSchematicEntropy(unsigned long long seed, int entropyBytes) {
         return std::vector<uint8_t>(entropyBytes, (uint8_t)seed);
+    }
+
+    // --- VALIDARE ȘI PROCESARE BIP39 PENTRU CHECK MODE ---
+    bool isValidBip39Word(const std::string& word) {
+        if (wordlist.empty()) return false;
+        return std::binary_search(wordlist.begin(), wordlist.end(), word);
+    }
+    
+    bool isValidBip39Phrase(const std::string& phrase) {
+        if (wordlist.empty() || phrase.empty()) return false;
+        
+        std::vector<std::string> words;
+        std::stringstream ss(phrase);
+        std::string word;
+        while (ss >> word) {
+            // Remove any extra whitespace
+            word.erase(std::remove_if(word.begin(), word.end(), ::isspace), word.end());
+            if (!word.empty()) words.push_back(word);
+        }
+        
+        // Check word count (12, 15, 18, 21, 24 words are valid)
+        if (words.size() != 12 && words.size() != 15 && words.size() != 18 && 
+            words.size() != 21 && words.size() != 24) {
+            return false;
+        }
+        
+        // Check all words are in wordlist
+        for (const auto& w : words) {
+            if (!isValidBip39Word(w)) return false;
+        }
+        
+        return true;
+    }
+    
+    MnemonicResult processBip39Phrase(const std::string& phrase, const BloomFilter& bloom) {
+        MnemonicResult result;
+        result.mnemonic = phrase;
+        
+        // Calculate entropy from phrase
+        std::vector<int> wordIndices;
+        std::stringstream ss(phrase);
+        std::string word;
+        while (ss >> word) {
+            auto it = std::lower_bound(wordlist.begin(), wordlist.end(), word);
+            if (it != wordlist.end() && *it == word) {
+                wordIndices.push_back(it - wordlist.begin());
+            }
+        }
+        
+        int wordCount = (int)wordIndices.size();
+        int entropyBits = wordCount * 11 - wordCount / 3;
+        int entropyBytes = entropyBits / 8;
+        
+        // Reconstruct entropy from word indices
+        std::string bits;
+        for (int idx : wordIndices) {
+            bits += std::bitset<11>(idx).to_string();
+        }
+        bits = bits.substr(0, entropyBits); // Remove checksum bits
+        
+        std::vector<uint8_t> entropy;
+        for (size_t i = 0; i < bits.length(); i += 8) {
+            entropy.push_back((uint8_t)std::bitset<8>(bits.substr(i, 8)).to_ulong());
+        }
+        
+        result.entropyHex = BytesToHex(entropy);
+        
+        // Generate BIP39 seed using PBKDF2
+        uint8_t mSeed[64];
+        if (PKCS5_PBKDF2_HMAC(phrase.c_str(), (int)phrase.length(), 
+                              (const unsigned char*)"mnemonic", 8, 2048, EVP_sha512(), 64, mSeed)) {
+            checkPathsAndAdd(mSeed, result, bloom, 64);
+        }
+        
+        return result;
+    }
+    
+    // --- PROCESARE AUTOMATĂ (Detectează BIP39 sau Brainwallet) ---
+    MnemonicResult processLineAuto(const std::string& line, const BloomFilter& bloom) {
+        // Try to detect if it's a BIP39 mnemonic
+        if (isValidBip39Phrase(line)) {
+            return processBip39Phrase(line, bloom);
+        }
+        
+        // Check if it's an XPRV
+        if (line.substr(0, 4) == "xprv") {
+            return processXprv(line, bloom);
+        }
+        
+        // Otherwise, treat as brainwallet (SHA256)
+        return processRawLine(line, bloom);
     }
 };
 #endif

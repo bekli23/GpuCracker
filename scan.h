@@ -19,6 +19,7 @@
 //  1. INTERFAȚA CUDA (C Linkage)
 //  Aceste funcții sunt implementate în mnemonic_gpu.cu
 // =============================================================
+#ifdef HAS_CUDA
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -45,6 +46,26 @@ extern "C" {
 
 #ifdef __cplusplus
 }
+#endif
+#endif  // HAS_CUDA
+
+// =============================================================
+//  PATH INFO STRUCT (pentru derivare adrese)
+// =============================================================
+// Note: PathInfo is defined in mnemonic.h when secp256k1 is available.
+// Only define it here as a fallback when secp256k1 is NOT available.
+#ifdef __cplusplus
+#ifndef PATH_INFO_DEFINED
+struct PathInfo { 
+    std::string label; 
+    std::string path; 
+    std::string coin; 
+
+    PathInfo(std::string l, std::string p, std::string c = "BTC") 
+        : label(l), path(p), coin(c) {}
+};
+#define PATH_INFO_DEFINED
+#endif
 #endif
 
 // =============================================================

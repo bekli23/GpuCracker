@@ -31,7 +31,9 @@
 #endif
 
 // External Libraries for Cryptography
+#ifndef NO_SECP256K1
 #include <secp256k1.h>
+#endif
 #include <openssl/sha.h>
 #include <openssl/ripemd.h>
 #include <openssl/hmac.h>
@@ -101,6 +103,63 @@ namespace Bech32 {
         convert_bits(program, 8, 5, true, data);
         return encode(hrp, data);
     }
+    
+    // Decode Bech32/Bech32m address (BIP-173/BIP-350)
+    // Returns witness version (0-16) or -1 if invalid
+    inline int decode_segwit(const std::string& addr, std::string& hrp_out, std::vector<uint8_t>& program) {
+        // Find separator '1'
+        size_t sep = addr.find_last_of('1');
+        if (sep == std::string::npos || sep == 0 || sep + 7 > addr.size()) return -1;
+        
+        hrp_out = addr.substr(0, sep);
+        std::string data_str = addr.substr(sep + 1);
+        
+        // Create reverse charset map
+        static const int8_t charset_rev[128] = {
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            15, -1, 10, 17, 21, 20, 26, 30,  7,  5, -1, -1, -1, -1, -1, -1,
+            -1, 29, -1, 24, 13, 25,  9,  8, 23, -1, 18, 22, 31, 27, 19, -1,
+             1,  0,  3, 16, 11, 28, 12, 14,  6,  4,  2, -1, -1, -1, -1, -1,
+            -1, 29, -1, 24, 13, 25,  9,  8, 23, -1, 18, 22, 31, 27, 19, -1,
+             1,  0,  3, 16, 11, 28, 12, 14,  6,  4,  2, -1, -1, -1, -1, -1
+        };
+        
+        // Decode characters
+        std::vector<uint8_t> data;
+        data.reserve(data_str.size());
+        for (char c : data_str) {
+            if (c < 33 || c > 126) return -1;
+            int8_t d = charset_rev[static_cast<uint8_t>(c)];
+            if (d < 0) return -1;
+            data.push_back(static_cast<uint8_t>(d));
+        }
+        
+        // Verify checksum (Bech32 = 1, Bech32m = 0x2BC830A3)
+        std::vector<uint8_t> checksum_input = expand_hrp(hrp_out);
+        checksum_input.insert(checksum_input.end(), data.begin(), data.end());
+        uint32_t checksum = polymod(checksum_input);
+        
+        if (checksum != 1 && checksum != 0x2BC830A3) return -1;
+        
+        // Extract witness version and program
+        int witver = data[0];
+        if (witver > 16) return -1;
+        
+        std::vector<uint8_t> data_5bit(data.begin() + 1, data.end() - 6);
+        program.clear();
+        if (!convert_bits(data_5bit, 5, 8, false, program)) return -1;
+        
+        // Validate program length
+        if (witver == 0) {
+            if (program.size() != 20 && program.size() != 32) return -1;
+        } else {
+            if (program.size() < 2 || program.size() > 40) return -1;
+        }
+        
+        return witver;
+    }
 }
 
 // =============================================================
@@ -168,6 +227,77 @@ inline std::string EncodeBase58Check(const std::vector<uint8_t>& input) {
     return result;
 }
 
+// Decode Base58 string to bytes (standalone version)
+inline std::vector<uint8_t> DecodeBase58(const std::string& str) {
+    static const char* pszBase58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    std::vector<uint8_t> vch;
+    const char* pbegin = str.c_str();
+    const char* pend = pbegin + str.length();
+    while (pbegin != pend && isspace(*pbegin)) pbegin++;
+    int zeros = 0;
+    while (pbegin != pend && *pbegin == '1') { zeros++; pbegin++; }
+    int size = (pend - pbegin) * 733 / 1000 + 1;
+    std::vector<unsigned char> b256(size);
+    while (pbegin != pend && !isspace(*pbegin)) {
+        const char* ch = strchr(pszBase58, *pbegin);
+        if (ch == NULL) break;
+        int carry = ch - pszBase58;
+        for (int i = b256.size() - 1; i >= 0; i--) {
+            carry += 58 * b256[i];
+            b256[i] = carry % 256;
+            carry /= 256;
+        }
+        pbegin++;
+    }
+    std::vector<unsigned char>::iterator it = b256.begin();
+    while (it != b256.end() && *it == 0) it++;
+    vch.assign(zeros, 0x00);
+    vch.insert(vch.end(), it, b256.end());
+    return vch;
+}
+
+// Convert private key to WIF format
+inline std::string privKeyToWIF(const unsigned char* privKey, bool compressed = true) {
+    std::vector<uint8_t> data;
+    // Add version byte (0x80 for mainnet)
+    data.push_back(0x80);
+    // Add private key (32 bytes)
+    data.insert(data.end(), privKey, privKey + 32);
+    // Add compression flag if compressed
+    if (compressed) {
+        data.push_back(0x01);
+    }
+    return EncodeBase58Check(data);
+}
+
+// Convert private key hex string to WIF
+inline std::string privKeyHexToWIF(const std::string& hexKey, bool compressed = true) {
+    std::vector<uint8_t> privKey = fromHex(hexKey);
+    if (privKey.size() != 32) return "";
+    return privKeyToWIF(privKey.data(), compressed);
+}
+
+// Convert public key to P2SH-Segwit address (3...)
+inline std::string PubKeyToP2SH(const std::vector<uint8_t>& pubKey) {
+    unsigned char sha256_res[SHA256_DIGEST_LENGTH];
+    SHA256(pubKey.data(), pubKey.size(), sha256_res);
+    unsigned char ripemd160_res[RIPEMD160_DIGEST_LENGTH];
+    RIPEMD160(sha256_res, SHA256_DIGEST_LENGTH, ripemd160_res);
+
+    std::vector<uint8_t> redeemScript;
+    redeemScript.push_back(0x00);
+    redeemScript.push_back(0x14); 
+    redeemScript.insert(redeemScript.end(), ripemd160_res, ripemd160_res + 20);
+
+    SHA256(redeemScript.data(), redeemScript.size(), sha256_res);
+    RIPEMD160(sha256_res, SHA256_DIGEST_LENGTH, ripemd160_res);
+
+    std::vector<uint8_t> addrBytes;
+    addrBytes.push_back(0x05);  // P2SH version byte
+    addrBytes.insert(addrBytes.end(), ripemd160_res, ripemd160_res + 20);
+    return EncodeBase58Check(addrBytes);
+}
+
 // =============================================================
 // SECTION 3: CRYPTO CORE (BIP32)
 // =============================================================
@@ -198,6 +328,7 @@ inline ExtendedKey GetMasterKey(const std::vector<uint8_t>& seed) {
     return k;
 }
 
+#ifndef NO_SECP256K1
 inline ExtendedKey Derive(const ExtendedKey& parent, uint32_t index, secp256k1_context* ctx) {
     std::vector<uint8_t> data;
     if (index >= 0x80000000) {
@@ -227,6 +358,13 @@ inline ExtendedKey Derive(const ExtendedKey& parent, uint32_t index, secp256k1_c
     child.childIndex = index;
     return child;
 }
+#else
+inline ExtendedKey Derive(const ExtendedKey& parent, uint32_t index, void* ctx = nullptr) {
+    (void)ctx; (void)index;
+    // Stub implementation when secp256k1 is not available
+    return parent;
+}
+#endif
 
 // =============================================================
 // SECTION 4: ADDRESS CONVERTERS

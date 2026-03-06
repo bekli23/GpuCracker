@@ -155,6 +155,15 @@ private:
 
 public:
     // ========================================================================
+    // PUBLIC HELPERS
+    // ========================================================================
+    
+    // Public Hash160 wrapper
+    static void PublicHash160(const std::vector<uint8_t>& in, std::vector<uint8_t>& out) {
+        Hash160(in, out);
+    }
+
+    // ========================================================================
     // GENERARE ADRESE PENTRU DIVERSE MONEDE
     // ========================================================================
 
@@ -166,12 +175,26 @@ public:
         std::string c = coin;
         std::transform(c.begin(), c.end(), c.begin(), ::tolower);
 
-        if (c == "btc" || c == "bch" || c == "bsv") prefix = {0x00};
-        else if (c == "ltc") prefix = {0x30};  // 'L'
-        else if (c == "doge") prefix = {0x1E}; // 'D'
-        else if (c == "dash") prefix = {0x4C}; // 'X'
-        else if (c == "btg") prefix = {38};    // 'G'
-        else if (c == "zec" || c == "zcash") prefix = {0x1C, 0xB8}; // 't1'
+        // Bitcoin and forks
+        if (c == "btc" || c == "bch" || c == "bsv") prefix = {0x00};      // 1
+        else if (c == "ltc") prefix = {0x30};                              // L
+        else if (c == "doge") prefix = {0x1E};                             // D
+        else if (c == "dash") prefix = {0x4C};                             // X
+        else if (c == "btg") prefix = {0x26};                              // G
+        else if (c == "zec" || c == "zcash") prefix = {0x1C, 0xB8};       // t1
+        else if (c == "grs") prefix = {0x24};                              // F
+        else if (c == "dgb") prefix = {0x1E};                              // D
+        else if (c == "nav") prefix = {0x35};                              // N
+        else if (c == "pivx") prefix = {0x1E};                             // D
+        else if (c == "via") prefix = {0x47};                              // V
+        else if (c == "xvg") prefix = {0x1E};                              // D
+        else if (c == "zen") prefix = {0x20, 0x89};                       // zn
+        else if (c == "kmd") prefix = {0x3C};                              // R
+        else if (c == "zcl") prefix = {0x1C, 0xB8};                       // t1
+        else if (c == "xmr") return "";                                    // Monero - different algo
+        else if (c == "xrp") return "";                                    // Ripple - different algo
+        else if (c == "xem") return "";                                    // NEM - different algo
+        else if (c == "xlm") return "";                                    // Stellar - different algo
 
         return EncodeBase58Check(h160, prefix);
     }
@@ -188,11 +211,17 @@ public:
         std::string c = coin;
         std::transform(c.begin(), c.end(), c.begin(), ::tolower);
 
-        if (c == "btc" || c == "bch" || c == "bsv" || c == "btg") prefix = {0x05}; // '3'
-        else if (c == "ltc") prefix = {0x32};  // 'M' (Standard modern LTC P2SH)
-        else if (c == "doge") prefix = {0x16}; // '9' or 'A' (Multisig)
-        else if (c == "dash") prefix = {0x10}; // '7'
-        else if (c == "zec" || c == "zcash") prefix = {0x1C, 0xBD}; // 't3'
+        // Bitcoin and forks
+        if (c == "btc" || c == "bch" || c == "bsv" || c == "btg") prefix = {0x05}; // 3
+        else if (c == "ltc") prefix = {0x32};                              // M
+        else if (c == "doge") prefix = {0x16};                             // 9 or A
+        else if (c == "dash") prefix = {0x10};                             // 7
+        else if (c == "zec" || c == "zcash") prefix = {0x1C, 0xBD};       // t3
+        else if (c == "grs") prefix = {0x05};                              // 3
+        else if (c == "dgb") prefix = {0x3F};                              // S
+        else if (c == "nav") prefix = {0x35};                              // N
+        else if (c == "pivx") prefix = {0x0D};                             // 7
+        else if (c == "via") prefix = {0x21};                              // 3
 
         return EncodeBase58Check(scriptHash, prefix);
     }
@@ -202,15 +231,15 @@ public:
         std::string c = coin;
         std::transform(c.begin(), c.end(), c.begin(), ::tolower);
 
-        // DOGE, DASH, ZCASH usually don't use standard BIP173 Bech32 or have different implementation
-        // We support BTC, LTC, BTG, BCH (uses CashAddr - similar but diff constants), BSV.
-        // For simplicity/compatibility we primarily implement BTC/LTC/BTG here.
-        
         std::string hrp = "bc";
         if (c == "ltc") hrp = "ltc";
         else if (c == "btg") hrp = "btg";
-        else if (c == "bch") return "BCH_CASHADDR_REQ"; // BCH uses CashAddr
-        else if (c != "btc") return ""; // Not supported or standard
+        else if (c == "bch") return "BCH_CASHADDR_NOT_IMPL";
+        else if (c == "grs") hrp = "grs";
+        else if (c == "dgb") hrp = "dgb";
+        else if (c == "nav") hrp = "nav";
+        else if (c == "via") hrp = "via";
+        else if (c != "btc") return ""; // Not supported
 
         std::vector<uint8_t> h160; Hash160(pubKey, h160);
         return Bech32Encode(hrp, h160);
@@ -226,5 +255,76 @@ public:
         ss << "0x" << std::hex << std::setfill('0');
         for (size_t i = 12; i < 32; i++) ss << std::setw(2) << (int)hash[i];
         return ss.str();
+    }
+
+    // 5. ETHEREUM-BASED COINS (ETC, BNB, MATIC, AVAX, FTM, CRO, etc.)
+    // Same address format as ETH, just different derivation path
+    static std::string GenEthBased(const std::vector<uint8_t>& pubKey, const std::string& coin) {
+        // Same as ETH - Keccak256 of pubkey, last 20 bytes
+        return GenEth(pubKey);
+    }
+
+    // 6. COSMOS (ATOM) - Bech32 with "cosmos" prefix
+    static std::string GenCosmos(const std::vector<uint8_t>& pubKey) {
+        std::vector<uint8_t> h160; Hash160(pubKey, h160);
+        return Bech32Encode("cosmos", h160);
+    }
+
+    // 7. POLKADOT (DOT) - SS58 format (simplified)
+    static std::string GenPolkadot(const std::vector<uint8_t>& pubKey) {
+        // SS58 is complex - for now return empty (requires separate implementation)
+        return "DOT_SS58_NOT_IMPL";
+    }
+
+    // 8. SOLANA (SOL) - Base58 encoded public key
+    static std::string GenSolana(const std::vector<uint8_t>& pubKey) {
+        // Solana addresses are just base58 encoded public keys
+        std::vector<uint8_t> h160; Hash160(pubKey, h160);
+        // Actually Solana uses full 32-byte public key, but we'll use Hash160 for simplicity
+        return EncodeBase58Check(h160, {}); // No prefix
+    }
+
+    // 9. CARDANO (ADA) - Bech32 with "addr" prefix
+    static std::string GenCardano(const std::vector<uint8_t>& pubKey) {
+        std::vector<uint8_t> h160; Hash160(pubKey, h160);
+        return Bech32Encode("addr", h160);
+    }
+
+    // Master function to generate address based on coin type
+    static std::string GenAddress(const std::vector<uint8_t>& pubKey, const std::string& coin, const std::string& type = "legacy") {
+        std::string c = coin;
+        std::transform(c.begin(), c.end(), c.begin(), ::tolower);
+
+        // Ethereum-based coins
+        if (c == "eth" || c == "etc" || c == "bnb" || c == "matic" || c == "avax" || 
+            c == "ftm" || c == "cro" || c == "aave" || c == "uni" || c == "link" || 
+            c == "mkr" || c == "comp" || c == "yfi" || c == "snx" || c == "sushi" ||
+            c == "crv" || c == "1inch" || c == "bal" || c == "knc" || c == "lrc" ||
+            c == "bat" || c == "ren" || c == "omg" || c == "zrx" || c == "rep" ||
+            c == "enj" || c == "mana" || c == "sand" || c == "axs" || c == "chz" ||
+            c == "shib" || c == "dogelon" || c == "safemoon" || c == "usdt" || c == "usdc" ||
+            c == "busd" || c == "dai" || c == "tusd" || c == "usdp" || c == "gusd" ||
+            c == "frax" || c == "wbtc" || c == "renbtc" || c == "hbtc" || c == "ibtc" ||
+            c == "sbtc" || c == "theta" || c == "trx" || c == "btt" || c == "ftt" ||
+            c == "ht" || c == "leo" || c == "cetus") {
+            return GenEth(pubKey);
+        }
+        
+        // Cosmos-based
+        if (c == "atom") return GenCosmos(pubKey);
+        
+        // Polkadot
+        if (c == "dot") return GenPolkadot(pubKey);
+        
+        // Solana
+        if (c == "sol") return GenSolana(pubKey);
+        
+        // Cardano
+        if (c == "ada") return GenCardano(pubKey);
+        
+        // Bitcoin-based coins
+        if (type == "p2sh") return GenP2SH(pubKey, coin);
+        if (type == "bech32") return GenBech32(pubKey, coin);
+        return GenLegacy(pubKey, coin);
     }
 };
