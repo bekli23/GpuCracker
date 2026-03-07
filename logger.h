@@ -1,4 +1,8 @@
 #pragma once
+
+// Windows conflict fix - MUST be first
+#include "win_fix.h"
+
 #include <iostream>
 #include <fstream>
 #include <sstream>

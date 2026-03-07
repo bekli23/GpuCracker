@@ -1,0 +1,14 @@
+{
+  "suite":"GpuCracker v50.0 Full Benchmark",
+  "results":[
+    {"name":"cpu_sha256","duration_ms":1000,"iterations":11814822,"throughput":1.18148e+07,"avg_latency_ms":8.46394e-05,"min_latency_ms":0,"max_latency_ms":0.1405},
+    {"name":"cpu_pbkdf2","duration_ms":1000,"iterations":12410800,"throughput":1.24108e+07,"avg_latency_ms":8.0575e-05,"min_latency_ms":0,"max_latency_ms":0.0928},
+    {"name":"cpu_secp256k1","duration_ms":1000,"iterations":11540525,"throughput":1.15405e+07,"avg_latency_ms":8.66512e-05,"min_latency_ms":0,"max_latency_ms":0.0893},
+    {"name":"cpu_parallel_12t","duration_ms":2001.51,"iterations":12120429,"throughput":6.05563e+06,"avg_latency_ms":0.000165136,"min_latency_ms":0,"max_latency_ms":0},
+    {"name":"mode_mnemonic","duration_ms":1000,"iterations":11785071,"throughput":1.17851e+07,"avg_latency_ms":8.48531e-05,"min_latency_ms":0,"max_latency_ms":0.1338},
+    {"name":"mode_akm","duration_ms":1000,"iterations":12412372,"throughput":1.24124e+07,"avg_latency_ms":8.05648e-05,"min_latency_ms":0,"max_latency_ms":0.1308},
+    {"name":"mode_bsgs_babystep","duration_ms":1000,"iterations":11901711,"throughput":1.19017e+07,"avg_latency_ms":8.40215e-05,"min_latency_ms":0,"max_latency_ms":0.092},
+    {"name":"mode_rho_step","duration_ms":1000,"iterations":12566185,"throughput":1.25662e+07,"avg_latency_ms":7.95786e-05,"min_latency_ms":0,"max_latency_ms":0.1224},
+    {"name":"memory_alloc_1MB","duration_ms":0.2059,"iterations":10,"throughput":48567.3,"avg_latency_ms":0.02059,"min_latency_ms":0.0205,"max_latency_ms":0.0211}
+  ]
+}

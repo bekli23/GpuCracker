@@ -1,3 +1,6 @@
+// Windows conflict fix - MUST be first
+#include "win_fix.h"
+
 #include "gpu_memory_pool.h"
 
 #ifdef USE_CUDA

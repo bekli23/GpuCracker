@@ -1,3 +1,6 @@
+// Windows conflict fix - MUST be first
+#include "win_fix.h"
+
 #include "web_dashboard.h"
 
 std::unique_ptr<WebDashboard> g_dashboard;

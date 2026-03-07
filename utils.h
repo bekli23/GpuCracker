@@ -1,5 +1,8 @@
 #pragma once
 
+// Windows conflict fix - MUST be first
+#include "win_fix.h"
+
 #include <vector>
 #include <string>
 #include <sstream>
@@ -10,11 +13,11 @@
 #include <iostream>
 #include <cstdint>
 
+// Windows conflict fix - MUST be first
+#include "win_fix.h"
+
 // --- CROSS-PLATFORM SYSTEM HEADERS ---
 #ifdef _WIN32
-    #ifndef WIN32_LEAN_AND_MEAN
-        #define WIN32_LEAN_AND_MEAN
-    #endif
     #include <windows.h>
     #include <wininet.h>
     #pragma comment(lib, "wininet.lib")

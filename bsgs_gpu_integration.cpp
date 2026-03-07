@@ -1,5 +1,8 @@
 // bsgs_gpu_integration.cpp - GPU Integration Implementation
 
+// Windows conflict fix - MUST be first
+#include "win_fix.h"
+
 #include "bsgs_gpu_integration.h"
 
 // Try to include CUDA header

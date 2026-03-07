@@ -1,5 +1,8 @@
 #pragma once
 
+// Windows conflict fix - MUST be first
+#include "win_fix.h"
+
 // ============================================================================
 // BSGS MODE - Baby Step Giant Step for Secp256k1
 // ============================================================================
@@ -42,7 +45,17 @@
     #include <sys/types.h>
     #include <sys/sysctl.h>
 #elif _WIN32
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
     #include <windows.h>
+    // Undefine Windows macros that conflict with C++ code
+    #ifdef CRITICAL
+        #undef CRITICAL
+    #endif
 #endif
 #ifndef NO_SECP256K1
 #include <secp256k1.h>

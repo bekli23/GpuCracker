@@ -1,5 +1,8 @@
 #pragma once
 
+// Windows conflict fix - MUST be first
+#include "win_fix.h"
+
 #include <string>
 #include <vector>
 #include <iostream>
@@ -119,6 +122,11 @@ struct ProgramConfig {
     bool showRealSpeed = false; 
     bool help = false; 
     bool verbose = true; 
+    
+    // --- BENCHMARK SETTINGS ---
+    bool benchmark = false;              // --benchmark (run benchmark mode)
+    std::string benchmarkMode = "all";   // --benchmark-mode <mode> (all, mnemonic, akm, bsgs, rho, hybrid)
+    int benchmarkDuration = 10;          // --benchmark-duration <seconds> (default: 10s)
 };
 
 // =============================================================
@@ -230,6 +238,7 @@ inline ProgramConfig parseArgs(int argc, char* argv[]) {
                 file.erase(file.find_last_not_of(" \t") + 1);
                 if (!file.empty()) {
                     cfg.bsgsBloomKeysFiles.push_back(file);
+                    cfg.bloomFiles.push_back(file);  // Also populate main bloom files for all modes
                 }
             }
         }
@@ -272,8 +281,7 @@ inline ProgramConfig parseArgs(int argc, char* argv[]) {
         else if (arg == "--cores" && i + 1 < argc) cfg.cpuCores = std::stoi(argv[++i]);
         
         // --- DATA ---
-        // [MODIFICAT] Folosim parseStringList pentru a suporta multiple fisiere
-        else if (arg == "--bloom-keys" && i + 1 < argc) cfg.bloomFiles = parseStringList(argv[++i]);
+        // Note: --bloom-keys is handled above (populates both bsgsBloomKeysFiles and bloomFiles)
         else if (arg == "--win" && i + 1 < argc) cfg.winFile = argv[++i];
         
         // --- MNEMONIC ---
@@ -304,6 +312,11 @@ inline ProgramConfig parseArgs(int argc, char* argv[]) {
         else if (arg == "--blockchain-dir" && i + 1 < argc) cfg.blockchainDir = argv[++i];
         else if (arg == "--index-dir" && i + 1 < argc) cfg.indexDir = argv[++i];
         else if (arg == "--explorer-force") cfg.explorerForce = true;
+        
+        // --- BENCHMARK ---
+        else if (arg == "--benchmark") cfg.benchmark = true;
+        else if (arg == "--benchmark-mode" && i + 1 < argc) cfg.benchmarkMode = argv[++i];
+        else if (arg == "--benchmark-duration" && i + 1 < argc) cfg.benchmarkDuration = std::stoi(argv[++i]);
     }
 
     // Default settings logic
@@ -551,6 +564,15 @@ inline void printHelp() {
     std::cout << "  --speed                  Show real GPU seed generation speed.\n";
     std::cout << "  --win FILE               File path to save successful hits.\n";
     
+    std::cout << "\n--- BENCHMARK MODE ---\n";
+    std::cout << "  --benchmark              Run performance benchmark suite.\n";
+    std::cout << "                            Tests CPU, memory, and cryptographic operations.\n";
+    std::cout << "                            Generates benchmark report and JSON results.\n";
+    std::cout << "  --benchmark-mode MODE    Specific benchmark mode (default: all).\n";
+    std::cout << "                            Modes: all, mnemonic, akm, bsgs, rho, hybrid\n";
+    std::cout << "  --benchmark-duration N   Benchmark duration in seconds (default: 10).\n";
+    std::cout << "                            Example: --benchmark --benchmark-mode bsgs --benchmark-duration 30\n";
+
     std::cout << "\n--- HARDWARE CONFIGURATION ---\n";
     std::cout << "  --type TYPE              Backend: 'cuda', 'opencl', 'vulkan', or 'auto'\n";
     std::cout << "  --device N               GPU device ID (-1 for all).\n";

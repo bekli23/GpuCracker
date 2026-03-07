@@ -1,3 +1,6 @@
+// Windows conflict fix - MUST be first
+#include "win_fix.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -6,11 +9,48 @@
 // Includem runner-ul care conține logica CPU
 #include "runner.h"
 #include "config_manager.h"
+#include "benchmark.h"
 
 // =============================================================
 // MAIN ENTRY POINT (CPU ONLY)
 // =============================================================
 int main(int argc, char* argv[]) {
+    // Check for benchmark flag early (before any initialization)
+    for (int i = 1; i < argc; i++) {
+        if (std::string(argv[i]) == "--benchmark") {
+            // Parse benchmark mode if specified
+            std::string benchMode = "all";
+            int durationSec = 10;
+            
+            for (int j = i + 1; j < argc; j++) {
+                if (std::string(argv[j]).find("--") == 0) break;
+                if (std::string(argv[j]) == "mnemonic" || 
+                    std::string(argv[j]) == "akm" ||
+                    std::string(argv[j]) == "bsgs" ||
+                    std::string(argv[j]) == "rho" ||
+                    std::string(argv[j]) == "hybrid" ||
+                    std::string(argv[j]) == "all") {
+                    benchMode = argv[j];
+                }
+            }
+            
+            for (int j = 1; j < argc; j++) {
+                if (std::string(argv[j]) == "--benchmark-duration" && j + 1 < argc) {
+                    durationSec = std::atoi(argv[j + 1]);
+                }
+            }
+            
+            std::cout << "Starting GpuCracker Benchmark Suite...\n" << std::endl;
+            
+            if (benchMode != "all") {
+                GpuCrackerBenchmark::runModeBenchmark(benchMode, durationSec);
+            } else {
+                GpuCrackerBenchmark::runFullBenchmark(-1);
+            }
+            return 0;
+        }
+    }
+    
     // 0. Load configuration from file if exists
     ConfigManager config;
     if (std::ifstream("gpucracker.conf").good()) {

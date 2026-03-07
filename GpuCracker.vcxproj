@@ -43,7 +43,7 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>false</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;HAS_JSONCPP;USE_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;HAS_JSONCPP;USE_CUDA;HAS_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalIncludeDirectories>$(CudaToolkitIncludeDir);C:\vcpkg\installed\x64-windows\include;$(VCPKG_ROOT)\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OpenMPSupport>true</OpenMPSupport>
@@ -64,7 +64,7 @@
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
-      <CodeGeneration>compute_61,sm_61</CodeGeneration>
+      <CodeGeneration>compute_50,sm_50;compute_52,sm_52;compute_53,sm_53;compute_60,sm_60;compute_61,sm_61;compute_62,sm_62;compute_70,sm_70;compute_72,sm_72;compute_75,sm_75;compute_80,sm_80;compute_86,sm_86;compute_87,sm_87;compute_89,sm_89;compute_90,sm_90</CodeGeneration>
       <FastMath>true</FastMath>
       <AdditionalOptions>-allow-unsupported-compiler -std=c++17 -Xcompiler "/openmp" %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
@@ -84,7 +84,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;HAS_JSONCPP;USE_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;HAS_JSONCPP;USE_CUDA;HAS_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalIncludeDirectories>$(CudaToolkitIncludeDir);C:\vcpkg\installed\x64-windows\include;$(VCPKG_ROOT)\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OpenMPSupport>true</OpenMPSupport>
@@ -97,7 +97,7 @@
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
-      <CodeGeneration>sm_60;compute_61,sm_61</CodeGeneration>
+      <CodeGeneration>compute_50,sm_50;compute_52,sm_52;compute_53,sm_53;compute_60,sm_60;compute_61,sm_61;compute_62,sm_62;compute_70,sm_70;compute_72,sm_72;compute_75,sm_75;compute_80,sm_80;compute_86,sm_86;compute_87,sm_87;compute_89,sm_89;compute_90,sm_90</CodeGeneration>
       <AdditionalOptions>-allow-unsupported-compiler -std=c++17 -Xcompiler "/openmp" %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
     <PostBuildEvent>
@@ -148,28 +148,42 @@
 
   <!-- Header Files -->
   <ItemGroup>
+    <!-- Windows Conflict Fix (MUST be first) -->
+    <ClInclude Include="win_fix.h" />
     <!-- Core Headers -->
     <ClInclude Include="utils.h" />
     <ClInclude Include="kernel_ops.cuh" />
     <ClInclude Include="bloom.h" />
+    <ClInclude Include="bloom_filter.h" />
     <ClInclude Include="args.h" />
     <ClInclude Include="runner.h" />
     <ClInclude Include="opencl_wrapper.h" />
+    <ClInclude Include="opencl_provider.h" />
     <ClInclude Include="gpu_interface.h" />
     <ClInclude Include="cuda_provider.h" />
-    <ClInclude Include="opencl_provider.h" />
-
+    <ClInclude Include="vulkan_provider.h" />
+    <!-- AKM Mode -->
     <ClInclude Include="akm.h" />
+    <ClInclude Include="akm_enhanced.h" />
     <ClInclude Include="akm_extra.h" />
-    <ClInclude Include="mnemonic.h" />
-    <ClInclude Include="mode_akm.h" />
+    <ClInclude Include="akm_profile_loader.h" />
     <ClInclude Include="akm_profile_manager.h" />
-    <ClInclude Include="coin_database.h" />
+    <ClInclude Include="mode_akm.h" />
+    <!-- Mnemonic Mode -->
+    <ClInclude Include="mnemonic.h" />
+    <!-- Other Modes -->
     <ClInclude Include="check.h" />
     <ClInclude Include="clever.h" />
     <ClInclude Include="scan.h" />
+    <ClInclude Include="pubkey.h" />
+    <ClInclude Include="rho.h" />
+    <!-- Multi-coin Support -->
     <ClInclude Include="multicoin.h" />
+    <ClInclude Include="coin_database.h" />
+    <ClInclude Include="altcoins.h" />
     <ClInclude Include="GPUEngine.h" />
+    <!-- Bitcoin RPC -->
+    <ClInclude Include="bitcoin_rpc.h" />
     <!-- New Enhanced Headers -->
     <ClInclude Include="logger.h" />
     <ClInclude Include="config_manager.h" />
@@ -180,13 +194,11 @@
     <ClInclude Include="web_dashboard.h" />
     <ClInclude Include="benchmark.h" />
     <ClInclude Include="tests.h" />
-    <ClInclude Include="altcoins.h" />
     <ClInclude Include="integration.h" />
-    <!-- Pubkey Mode Support -->
-    <ClInclude Include="pubkey.h" />
+    <ClInclude Include="string_obfuscator.h" />
+    <!-- BSGS Mode -->
     <ClInclude Include="bsgs.h" />
     <ClInclude Include="bsgs_bloom_x.h" />
-    <!-- BSGS GPU Acceleration -->
     <ClInclude Include="bsgs_cuda.h" />
     <ClInclude Include="bsgs_opencl.h" />
     <ClInclude Include="bsgs_gpu_integration.h" />
@@ -204,9 +216,44 @@
     <None Include="gpucracker.conf">
       <DeploymentContent>true</DeploymentContent>
     </None>
+    <None Include="README.md" />
+    <None Include="RELEASES.md" />
     <None Include="ENHANCEMENTS.md" />
     <None Include="IMPLEMENTATION_SUMMARY.md" />
     <None Include="RUNNER_PATCH.md" />
+    <!-- Path Files -->
+    <None Include="paths_bitcoin_standard.txt" />
+    <None Include="paths_bitcoin_comprehensive.txt" />
+    <None Include="paths_deep_scan.txt" />
+    <None Include="paths_multicoin.txt" />
+    <None Include="PATH_FILES_README.md" />
+    <!-- Documentation -->
+    <None Include="readme\README.md" />
+    <None Include="readme\README_INDEX.md" />
+    <None Include="readme\README_GENERAL.md" />
+    <None Include="readme\README_BUILD_LINUX.md" />
+    <None Include="readme\README_BUILD_WIN.md" />
+    <None Include="readme\README_MODE_MNEMONIC.md" />
+    <None Include="readme\README_MODE_AKM.md" />
+    <None Include="readme\README_MODE_CHECK.md" />
+    <None Include="readme\README_MODE_SCAN.md" />
+    <None Include="readme\README_MODE_XPRV.md" />
+    <None Include="readme\README_MODE_BRAINWALLET.md" />
+    <None Include="readme\README_MODE_PUBKEY.md" />
+    <None Include="readme\README_MODE_BSGS.md" />
+    <None Include="readme\README_MODE_RHO.md" />
+    <None Include="readme\README_MODE_HYBRID.md" />
+    <None Include="readme\README_COMMAND_MNEMONIC.md" />
+    <None Include="readme\README_COMMAND_AKM.md" />
+    <None Include="readme\README_COMMAND_CHECK.md" />
+    <None Include="readme\README_COMMAND_SCAN.md" />
+    <None Include="readme\README_COMMAND_XPRV.md" />
+    <None Include="readme\README_COMMAND_BRAINWALLET.md" />
+    <None Include="readme\README_COMMAND_PUBKEY.md" />
+    <None Include="readme\README_COMMAND_BSGS.md" />
+    <None Include="readme\README_COMMAND_RHO.md" />
+    <None Include="readme\README_COMMAND_HYBRID.md" />
+    <None Include="readme\PREZENTARE_GITHUB.md" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

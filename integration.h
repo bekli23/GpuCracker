@@ -1,5 +1,8 @@
 #pragma once
 
+// Windows conflict fix - MUST be first
+#include "win_fix.h"
+
 // =============================================================
 // INTEGRATION HEADER - Links all enhanced components
 // =============================================================
@@ -10,11 +13,11 @@
 #include "two_stage_filter.h"
 #include "web_dashboard.h"
 #include "altcoins.h"
+#include "benchmark.h"
 
 #ifdef USE_CUDA
 #include "gpu_memory_pool.h"
 #include "gpu_auto_tuner.h"
-#include "benchmark.h"
 #endif
 
 // Global instances
@@ -132,7 +135,35 @@ inline ProgramConfig parseArgsEnhanced(int argc, char* argv[]) {
     // Check for benchmark flag
     for (int i = 1; i < argc; i++) {
         if (std::string(argv[i]) == "--benchmark") {
-            GpuBenchmark::runFullBenchmark(cfg.deviceId >= 0 ? cfg.deviceId : 0);
+            // Check for mode-specific benchmark
+            std::string benchMode = "all";
+            int durationSec = 10;
+            
+            // Parse --benchmark-mode if specified
+            for (int j = i + 1; j < argc; j++) {
+                if (std::string(argv[j]).find("--") == 0) break;
+                if (std::string(argv[j]) == "mnemonic" || 
+                    std::string(argv[j]) == "akm" ||
+                    std::string(argv[j]) == "bsgs" ||
+                    std::string(argv[j]) == "rho" ||
+                    std::string(argv[j]) == "hybrid" ||
+                    std::string(argv[j]) == "all") {
+                    benchMode = argv[j];
+                }
+            }
+            
+            // Check for --benchmark-duration
+            for (int j = 1; j < argc; j++) {
+                if (std::string(argv[j]) == "--benchmark-duration" && j + 1 < argc) {
+                    durationSec = std::atoi(argv[j + 1]);
+                }
+            }
+            
+            if (benchMode != "all") {
+                GpuCrackerBenchmark::runModeBenchmark(benchMode, durationSec);
+            } else {
+                GpuCrackerBenchmark::runFullBenchmark(cfg.deviceId >= 0 ? cfg.deviceId : -1);
+            }
             exit(0);
         }
     }

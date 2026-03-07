@@ -1,11 +1,8 @@
 #pragma once
 #define _CRT_SECURE_NO_WARNINGS
 
-#ifdef _WIN32
-    #ifndef NOMINMAX
-    #define NOMINMAX
-    #endif
-#endif
+// Windows conflict fix - MUST be first
+#include "win_fix.h"
 
 // Standard library headers
 #include <iostream>
@@ -105,7 +102,14 @@ extern "C" {
 #endif
 
 #ifdef _WIN32
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
 #include <windows.h>
+    // Undefine Windows macros that conflict with C++ code
+    #ifdef CRITICAL
+        #undef CRITICAL
+    #endif
 inline void setupConsole() {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD dwMode = 0; GetConsoleMode(hOut, &dwMode); dwMode |= 0x0004; 
@@ -558,20 +562,51 @@ private:
 
     void detectHardware() {
         int gIdx = 0; bool useAll = (cfg.deviceId == -1);
+        bool wantCuda = (cfg.gpuType == "cuda" || cfg.gpuType == "auto");
+        bool wantOpenCL = (cfg.gpuType == "opencl" || cfg.gpuType == "auto");
+        bool wantVulkan = (cfg.gpuType == "vulkan" || cfg.gpuType == "auto");
+        
 #ifdef HAS_CUDA
-        int cudaCount = 0;
-        if (cudaGetDeviceCount(&cudaCount) == cudaSuccess) {
-            for (int i = 0; i < cudaCount; i++) {
-                if (useAll || cfg.deviceId == gIdx) {
-                    try {
-                        auto* p = new CudaProvider(i, cfg.cudaBlocks, cfg.cudaThreads, cfg.pointsPerThread, true);
-                        p->init(); activeGpus.push_back({ p, "CUDA", i, gIdx });
-                    } catch (...) {}
+        if (wantCuda) {
+            int cudaCount = 0;
+            cudaError_t err = cudaGetDeviceCount(&cudaCount);
+            if (err != cudaSuccess) {
+                std::cerr << "[CUDA] Error getting device count: " << cudaGetErrorString(err) << "\n";
+            } else if (cudaCount == 0) {
+                std::cerr << "[CUDA] No CUDA devices found\n";
+            } else {
+                std::cout << "[CUDA] Found " << cudaCount << " device(s)\n";
+                for (int i = 0; i < cudaCount; i++) {
+                    if (useAll || cfg.deviceId == gIdx) {
+                        try {
+                            auto* p = new CudaProvider(i, cfg.cudaBlocks, cfg.cudaThreads, cfg.pointsPerThread, true);
+                            p->init(); 
+                            activeGpus.push_back({ p, "CUDA", i, gIdx });
+                            std::cout << "[CUDA] Initialized device " << i << ": " << p->getName() << "\n";
+                        } catch (const std::exception& e) {
+                            std::cerr << "[CUDA] Failed to initialize device " << i << ": " << e.what() << "\n";
+                        } catch (...) {
+                            std::cerr << "[CUDA] Failed to initialize device " << i << ": unknown error\n";
+                        }
+                    }
+                    gIdx++;
                 }
-                gIdx++;
             }
         }
+#else
+        if (wantCuda) {
+            std::cerr << "[CUDA] Not compiled with CUDA support (HAS_CUDA not defined)\n";
+        }
 #endif
+        
+        // TODO: Add OpenCL and Vulkan detection here
+        
+        if (activeGpus.empty()) {
+            std::cerr << "[Hardware] No GPU backends initialized (requested: " << cfg.gpuType << ")\n";
+        } else {
+            std::cout << "[Hardware] Total GPUs initialized: " << activeGpus.size() << "\n";
+        }
+        
         for(auto& gpu : activeGpus) hostBuffers.push_back(new unsigned char[(size_t)gpu.provider->getBatchSize() * 32]);
     }
 
@@ -1131,7 +1166,7 @@ public:
                      }
                  }
 
-                 if (gpuIdx == 0 && (currentId % 50 == 0)) {
+                 if (((gpuIdx == 0 && !activeGpus.empty()) || (gpuIdx == -1)) && (currentId % 50 == 0)) {
                     std::lock_guard<std::mutex> lock(displayMutex); 
                     currentDisplay.countId = currentId; 
                     currentDisplay.mnemonic = generatedXprv; 
@@ -1145,7 +1180,7 @@ public:
                              queueAddressForBlockchainCheck(r.addr, currentId, generatedXprv, "", "", r.path, r.type);
                         }
                     }
-                 } else if (gpuIdx == 0) {
+                 } else if ((gpuIdx == 0 && !activeGpus.empty()) || (gpuIdx == -1)) {
                      // Still queue addresses even if not updating display
                      for(auto& r : res.rows) {
                          queueAddressForBalanceCheck(r.addr, currentId);
@@ -1169,7 +1204,7 @@ public:
         bool isPresetValue = (hasEntropyStr && !isKeyword) || isXprv;
         
         if (isPresetValue) {
-            if (gpuIdx == 0) { 
+            if ((gpuIdx == 0 && !activeGpus.empty()) || (gpuIdx == -1)) { 
 #ifndef NO_SECP256K1
                 std::string phrase;
                 if (isXprv) {
@@ -1204,11 +1239,16 @@ public:
             return;
         }
 
-        ActiveGpuContext& gpu = activeGpus[gpuIdx];
+        // Handle CPU-only mode (gpuIdx = -1)
+        unsigned long long bSz = 1000; // Default batch size for CPU
+        
+        if (gpuIdx >= 0 && gpuIdx < (int)activeGpus.size()) {
+            ActiveGpuContext& gpu = activeGpus[gpuIdx];
 #ifdef HAS_CUDA
-        if (gpu.backend == "CUDA") cudaSetDevice(gpu.deviceId);
+            if (gpu.backend == "CUDA") cudaSetDevice(gpu.deviceId);
 #endif
-        unsigned long long bSz = gpu.provider->getBatchSize();
+            bSz = gpu.provider->getBatchSize();
+        }
         unsigned long long* fSeeds = new unsigned long long[1024]; int fCnt = 0;
         std::mt19937_64 rng(std::random_device{}() + gpuIdx);
         
@@ -1244,12 +1284,14 @@ public:
                 currentTargetBit = targetBits[0];
             }
 
-            if (gpuIdx == 0) {
+            // Update UI from first GPU or first CPU worker
+            if ((gpuIdx == 0 && !activeGpus.empty()) || (gpuIdx == -1)) {
                 currentActiveBit.store(currentTargetBit);
             }
 
 #ifdef HAS_CUDA
-            if (bloom.isLoaded() && gpu.backend == "CUDA") {
+            // Skip GPU search for CPU workers (gpuIdx = -1)
+            if (gpuIdx >= 0 && bloom.isLoaded() && activeGpus[gpuIdx].backend == "CUDA") {
                 for (size_t k = 0; k < bloom.getLayerCount(); k++) {
                     const uint8_t* blfData = bloom.getLayerData(k);
                     size_t blfSize = bloom.getLayerSize(k);
@@ -1302,7 +1344,8 @@ public:
             }
 #endif
 
-            if (gpuIdx == 0) {
+            // Update UI from first GPU or first CPU worker
+            if ((gpuIdx == 0 && !activeGpus.empty()) || (gpuIdx == -1)) {
                 unsigned long long visualSeed = base;
                 if (cfg.mnemonicOrder == "schematic") {
                     // Pentru modul schematic, folosim contor secvențial dedicat pentru UI
@@ -1487,8 +1530,20 @@ public:
         }
         
         std::vector<std::thread> threads;
+        
+        // Spawn GPU worker threads
         for (int i = 0; i < (int)activeGpus.size(); i++) {
             threads.emplace_back(&Runner::workerClassBGPU, this, i);
+        }
+        
+        // If no GPUs available, spawn CPU worker threads
+        if (activeGpus.empty()) {
+            int cpuWorkers = cfg.cpuCores > 0 ? cfg.cpuCores : std::thread::hardware_concurrency();
+            if (cpuWorkers < 1) cpuWorkers = 1;
+            std::cout << "[Runner] No GPUs detected. Using " << cpuWorkers << " CPU worker threads.\n";
+            for (int i = 0; i < cpuWorkers; i++) {
+                threads.emplace_back(&Runner::workerClassBGPU, this, -1); // -1 indicates CPU worker
+            }
         }
         int rotationCheckCounter = 0;
         int frameCounter = 0;

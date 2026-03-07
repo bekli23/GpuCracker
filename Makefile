@@ -161,7 +161,9 @@ SRCS_CU  = $(wildcard *.cu)
 EXCLUDE_LIST = build_bloom.cpp recover.cpp seed2priv_main.cpp schematic_test_gen.cpp loader_wrapper.cpp test_runner.cpp test_minimal.cpp test_syntax.cpp
 
 # CUDA-dependent files (exclude if no CUDA)
-CUDA_DEPENDENT_CPP = gpu_memory_pool.cpp web_dashboard.cpp bsgs_gpu_integration.cpp
+# Note: gpu_memory_pool.cpp and web_dashboard.cpp have proper #ifdef USE_CUDA guards
+# Only bsgs_gpu_integration.cpp truly requires CUDA headers
+CUDA_DEPENDENT_CPP = bsgs_gpu_integration.cpp
 
 ifeq ($(HAS_CUDA),0)
     EXCLUDE_LIST += $(CUDA_DEPENDENT_CPP)
@@ -440,7 +442,11 @@ help:
 	@echo "  make version      - Show version and config"
 	@echo "  make check-deps   - Check dependencies"
 	@echo "  make print-config - Show build configuration"
+	@echo "  make list-files   - List source files being compiled"
 	@echo "  make help         - Show this help"
+	@echo ""
+	@echo "Setup:"
+	@echo "  make install-deps - Install dependencies (Ubuntu/Debian)"
 	@echo ""
 	@echo "Environment variables:"
 	@echo "  CUDA_PATH         - CUDA installation path (default: /usr/local/cuda)"
@@ -506,6 +512,32 @@ print-config:
 	@echo "  SRCS_APP_CPP: $(words $(SRCS_APP_CPP)) files"
 	@echo "  SRCS_APP_CU: $(words $(SRCS_APP_CU)) files"
 	@echo "  OBJS_APP: $(words $(OBJS_APP)) objects"
+
+# List source files being compiled
+list-files:
+	@echo "C++ Source files ($(words $(SRCS_APP_CPP))):"
+	@for f in $(SRCS_APP_CPP); do echo "  - $$f"; done
+ifeq ($(HAS_CUDA),1)
+	@echo ""
+	@echo "CUDA Source files ($(words $(SRCS_APP_CU))):"
+	@for f in $(SRCS_APP_CU); do echo "  - $$f"; done
+endif
+	@echo ""
+	@echo "Excluded files:"
+	@for f in $(EXCLUDE_LIST); do echo "  - $$f"; done
+
+# Install dependencies (Ubuntu/Debian)
+install-deps:
+	@echo "[INSTALL] Installing dependencies..."
+	@echo "This requires sudo privileges."
+	sudo apt-get update
+	sudo apt-get install -y build-essential g++ gcc
+	sudo apt-get install -y libssl-dev libcrypto++-dev
+	sudo apt-get install -y libsecp256k1-dev
+	sudo apt-get install -y ocl-icd-opencl-dev opencl-headers
+	sudo apt-get install -y libboost-all-dev
+	sudo apt-get install -y nvidia-cuda-toolkit || echo "CUDA must be installed manually from NVIDIA"
+	@echo "[OK] Dependencies installed"
 
 # Cache management targets
 cache-clean:

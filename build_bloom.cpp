@@ -1,3 +1,6 @@
+// Windows conflict fix - MUST be first
+#include "win_fix.h"
+
 #define _CRT_SECURE_NO_WARNINGS
 
 // Suppress OpenSSL deprecation warnings (SHA256_* is deprecated since 3.0)
