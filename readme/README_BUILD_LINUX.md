@@ -39,6 +39,7 @@ sudo apt install -y \
     libomp-dev \
     libboost-all-dev \
     nlohmann-json3-dev
+ sudo apt install nvidia-cuda-toolkit ocl-icd-opencl-dev libsecp256k1-dev libboost-all-dev
 ```
 
 #### Fedora
